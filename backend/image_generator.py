@@ -1,51 +1,201 @@
 from __future__ import annotations
 
+"""Image generation module with provider fallbacks, caching, and CLIP scoring."""
+
+import hashlib
 import io
 import os
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
 from PIL import Image, ImageDraw
+from tqdm import tqdm
 
-from scene_builder import Scene
+try:
+    from .config import get_settings
+    from .scene_builder import Scene
+except ImportError:  # pragma: no cover
+    from config import get_settings
+    from scene_builder import Scene
 
 UPLOADS_DIR = Path(__file__).resolve().parent / "assets" / "uploads"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 class ImageGenerator:
-    def __init__(self) -> None:
+    """Generate scene images via uploads, stock APIs, A1111, or fallback placeholder."""
+
+    def __init__(self, job_id: str = "local", *, clear_cache: bool = False) -> None:
+        settings = get_settings()
+        self.job_id = job_id
+        self.settings = settings
+
         self.pexels_key = os.getenv("PEXELS_API_KEY", "")
         self.pixabay_key = os.getenv("PIXABAY_API_KEY", "")
         self.unsplash_key = os.getenv("UNSPLASH_ACCESS_KEY", "")
+        self.a1111_url = settings.a1111_url
 
-    def generate_scene_image(self, scene: Scene, output_path: Path, width: int = 1280, height: int = 720) -> Path:
+        self.cache_dir = settings.projects_dir / job_id / "cache" / "images"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if clear_cache or settings.clear_cache_default:
+            for file in self.cache_dir.glob("*.png"):
+                file.unlink(missing_ok=True)
+
+        # Semaphore limits concurrent heavy generation calls.
+        self.sd_semaphore = threading.Semaphore(2)
+
+        self._clip_model = None
+        self._clip_processor = None
+
+    def _cache_key(self, prompt: str, width: int, height: int, seed: int | None, steps: int) -> str:
+        """Build deterministic cache key for generated image parameters."""
+
+        payload = f"{prompt}|{width}|{height}|{seed}|{steps}|{self.a1111_url}|{self.settings.sd_model}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _copy_from_cache(self, cache_key: str, output_path: Path) -> bool:
+        """Copy cached image to destination if present."""
+
+        cache_file = self.cache_dir / f"{cache_key}.png"
+        if not cache_file.exists():
+            return False
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(cache_file.read_bytes())
+        return True
 
-        if self._use_uploaded_image(scene, output_path, width, height):
+    def _save_cache(self, cache_key: str, output_path: Path) -> None:
+        """Persist generated image to cache."""
+
+        cache_file = self.cache_dir / f"{cache_key}.png"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_bytes(output_path.read_bytes())
+
+    def _init_clip(self) -> None:
+        """Lazy-load CLIP model only when scoring is enabled."""
+
+        if self._clip_model is not None and self._clip_processor is not None:
+            return
+        from transformers import CLIPModel, CLIPProcessor
+
+        self._clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+        self._clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+    def _clip_score(self, prompt: str, image_path: Path) -> float:
+        """Compute CLIP similarity score for prompt/image alignment."""
+
+        if not self.settings.enable_clip_scoring:
+            return 1.0
+
+        try:
+            self._init_clip()
+            image = Image.open(image_path).convert("RGB")
+            inputs = self._clip_processor(text=[prompt], images=image, return_tensors="pt", padding=True)
+            outputs = self._clip_model(**inputs)
+            logits = outputs.logits_per_image
+            return float(logits.softmax(dim=1).max().item())
+        except Exception:
+            return 1.0
+
+    def generate_scene_image(
+        self,
+        scene: Scene,
+        output_path: Path,
+        width: int = 1280,
+        height: int = 720,
+        *,
+        steps: int | None = None,
+        seed: int | None = None,
+    ) -> Path:
+        """Generate one scene image with cache + fallback chain."""
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        effective_steps = int(steps or self.settings.sd_steps)
+        cache_key = self._cache_key(scene.visual_prompt, width, height, seed, effective_steps)
+
+        if self._copy_from_cache(cache_key, output_path):
             return output_path
 
-        if self.pexels_key and self._fetch_pexels(scene.visual_prompt, output_path, width, height):
-            return output_path
+        retries = max(0, self.settings.clip_retries)
+        for attempt in range(retries + 1):
+            created = (
+                self._use_uploaded_image(scene, output_path, width, height)
+                or self._fetch_a1111(scene.visual_prompt, output_path, width, height, effective_steps, seed)
+                or (self.pexels_key and self._fetch_pexels(scene.visual_prompt, output_path, width, height))
+                or (self.pixabay_key and self._fetch_pixabay(scene.visual_prompt, output_path, width, height))
+                or (self.unsplash_key and self._fetch_unsplash(scene.visual_prompt, output_path, width, height))
+                or self._fetch_picsum(output_path, width, height)
+            )
+            if not created:
+                self._generate_fallback_image(scene, output_path, width, height)
 
-        if self.pixabay_key and self._fetch_pixabay(scene.visual_prompt, output_path, width, height):
-            return output_path
+            if self._clip_score(scene.visual_prompt, output_path) >= self.settings.clip_threshold:
+                break
+            if attempt == retries:
+                break
 
-        if self.unsplash_key and self._fetch_unsplash(scene.visual_prompt, output_path, width, height):
-            return output_path
-
-        if self._fetch_picsum(output_path, width, height):
-            return output_path
-
-        self._generate_fallback_image(scene, output_path, width, height)
+        self._save_cache(cache_key, output_path)
         return output_path
 
+    def generate_images_parallel(
+        self,
+        scenes: list[Scene],
+        output_dir: Path,
+        *,
+        max_workers: int = 4,
+        steps: int | None = None,
+        seed: int | None = None,
+    ) -> list[Path]:
+        """Generate scene images in parallel with bounded worker pool."""
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        outputs: list[Path] = [output_dir / f"scene{s.index:03d}.png" for s in scenes]
+
+        def _task(scene: Scene, path: Path) -> Path:
+            return self.generate_scene_image(scene, path, steps=steps, seed=seed)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_task, scene, path) for scene, path in zip(scenes, outputs)]
+            for future in tqdm(futures, desc="Images", disable=True):
+                future.result()
+
+        return outputs
+
+    def generate_thumbnail_variants(
+        self,
+        scene_prompt: str,
+        output_dir: Path,
+        *,
+        width: int = 1280,
+        height: int = 720,
+    ) -> list[Path]:
+        """Generate three thumbnail prompt variants and return output paths."""
+
+        variants = [
+            ("cinematic", "cinematic thumbnail, high contrast, title-safe composition"),
+            ("minimalist", "minimalist thumbnail, clean shapes, bold focal object"),
+            ("vibrant", "vibrant thumbnail, saturated colors, energetic mood"),
+        ]
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        outputs: list[Path] = []
+        fake_scene = Scene(index=1, narration="", visual_prompt=scene_prompt, estimated_duration=8.0)
+
+        for idx, (name, suffix) in enumerate(variants, start=1):
+            path = output_dir / f"thumb_{idx:02d}_{name}.png"
+            fake_scene.visual_prompt = f"{scene_prompt}, {suffix}"
+            self.generate_scene_image(fake_scene, path, width=width, height=height)
+            outputs.append(path)
+
+        return outputs
+
     def _use_uploaded_image(self, scene: Scene, output_path: Path, width: int, height: int) -> bool:
+        """Use user-uploaded images in a rotating sequence if available."""
+
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        uploads = sorted(
-            f for f in UPLOADS_DIR.iterdir() if f.suffix.lower() in ALLOWED_EXTENSIONS
-        )
+        uploads = sorted(f for f in UPLOADS_DIR.iterdir() if f.suffix.lower() in ALLOWED_EXTENSIONS)
         if not uploads:
             return False
         chosen = uploads[(scene.index - 1) % len(uploads)]
@@ -57,7 +207,44 @@ class ImageGenerator:
         except Exception:
             return False
 
+    def _fetch_a1111(
+        self,
+        prompt: str,
+        output_path: Path,
+        width: int,
+        height: int,
+        steps: int,
+        seed: int | None,
+    ) -> bool:
+        """Fetch image from AUTOMATIC1111 txt2img API."""
+
+        payload = {
+            "prompt": prompt,
+            "steps": steps,
+            "width": width,
+            "height": height,
+            "seed": int(seed) if seed is not None else -1,
+        }
+        try:
+            with self.sd_semaphore:
+                response = requests.post(self.a1111_url, json=payload, timeout=120)
+            response.raise_for_status()
+            data = response.json()
+            images = data.get("images", [])
+            if not images:
+                return False
+            import base64
+
+            raw = base64.b64decode(images[0])
+            img = Image.open(io.BytesIO(raw)).convert("RGB")
+            img.save(output_path)
+            return True
+        except Exception:
+            return False
+
     def _fetch_pexels(self, prompt: str, output_path: Path, width: int, height: int) -> bool:
+        """Fetch image from Pexels."""
+
         query = self._extract_keywords(prompt)
         try:
             response = requests.get(
@@ -77,6 +264,8 @@ class ImageGenerator:
             return False
 
     def _fetch_pixabay(self, prompt: str, output_path: Path, width: int, height: int) -> bool:
+        """Fetch image from Pixabay."""
+
         query = self._extract_keywords(prompt)
         try:
             response = requests.get(
@@ -102,6 +291,8 @@ class ImageGenerator:
             return False
 
     def _fetch_unsplash(self, prompt: str, output_path: Path, width: int, height: int) -> bool:
+        """Fetch image from Unsplash."""
+
         query = self._extract_keywords(prompt)
         try:
             response = requests.get(
@@ -121,10 +312,14 @@ class ImageGenerator:
             return False
 
     def _fetch_picsum(self, output_path: Path, width: int, height: int) -> bool:
+        """Fetch random placeholder image from Picsum."""
+
         url = f"https://picsum.photos/{width}/{height}"
         return self._download_and_resize(url, output_path, width, height)
 
     def _download_and_resize(self, url: str, output_path: Path, width: int, height: int) -> bool:
+        """Download remote image and fit into target frame."""
+
         try:
             response = requests.get(
                 url,
@@ -141,9 +336,13 @@ class ImageGenerator:
             return False
 
     def _extract_keywords(self, prompt: str) -> str:
-        return " ".join(prompt.split()[:10])
+        """Extract compact keyword query from freeform prompt."""
+
+        return " ".join(prompt.split()[:12])
 
     def _generate_fallback_image(self, scene: Scene, output_path: Path, width: int, height: int) -> None:
+        """Generate deterministic fallback image when all providers fail."""
+
         image = Image.new("RGB", (width, height), color=(24, 24, 28))
         draw = ImageDraw.Draw(image)
         text = f"Scene {scene.index}\n{scene.visual_prompt[:180]}"

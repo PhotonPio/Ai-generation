@@ -6,7 +6,7 @@ on:
       prompt:
         description: "Video prompt"
         required: true
-        default: "Create a 5 minute educational video about the Roman Empire"
+        default: "Create a 5-minute educational video about black holes"
       minutes:
         description: "Video length in minutes"
         required: true
@@ -15,6 +15,14 @@ on:
         description: "Scene length in seconds"
         required: true
         default: "8"
+      style:
+        description: "Script style"
+        required: true
+        default: "educational"
+      model:
+        description: "Ollama model"
+        required: true
+        default: "llama3:8b"
 
 jobs:
   render:
@@ -44,13 +52,18 @@ jobs:
           python backend/scripts/run_pipeline.py \
             --prompt "${{ github.event.inputs.prompt }}" \
             --minutes "${{ github.event.inputs.minutes }}" \
-            --scene-seconds "${{ github.event.inputs.scene_seconds }}"
+            --scene-seconds "${{ github.event.inputs.scene_seconds }}" \
+            --style "${{ github.event.inputs.style }}" \
+            --model "${{ github.event.inputs.model }}" \
+            --transition-style kenburns \
+            --auto-scene-duration
 
       - name: Upload video artifacts
         uses: actions/upload-artifact@v4
         with:
           name: generated-video
           path: |
-            backend/output/video/*_final.mp4
-            backend/output/subtitles/*.srt
-            backend/output/thumbnails/*.jpg
+            backend/output/projects/**/video.mp4
+            backend/output/projects/**/subtitles.srt
+            backend/output/projects/**/thumbnail.jpg
+            backend/output/projects/**/manifest.json

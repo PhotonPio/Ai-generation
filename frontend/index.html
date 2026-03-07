@@ -10,7 +10,18 @@
     <main class="container">
       <h1>AI Video Generator</h1>
 
-      <!-- Step indicator -->
+      <section class="auth-row">
+        <div>
+          <label for="apiUser">API User</label>
+          <input id="apiUser" type="text" placeholder="admin" />
+        </div>
+        <div>
+          <label for="apiPass">API Pass</label>
+          <input id="apiPass" type="password" placeholder="changeme" />
+        </div>
+        <button id="saveAuthBtn" class="btn-secondary">Save Auth</button>
+      </section>
+
       <nav class="steps" id="stepNav">
         <div class="step-item active" data-step="setup">1 Setup</div>
         <div class="step-item" data-step="script">2 Script</div>
@@ -19,22 +30,27 @@
         <div class="step-item" data-step="render">5 Render</div>
       </nav>
 
-      <!-- ── Step 1: Setup ──────────────────────────────────────────── -->
+      <section class="phase-progress">
+        <div class="phase-line"><span>Script</span><progress id="phaseScript" max="100" value="0"></progress></div>
+        <div class="phase-line"><span>Images</span><progress id="phaseImages" max="100" value="0"></progress></div>
+        <div class="phase-line"><span>Audio</span><progress id="phaseAudio" max="100" value="0"></progress></div>
+        <div class="phase-line"><span>Render</span><progress id="phaseRender" max="100" value="0"></progress></div>
+      </section>
+
       <section id="step-setup" class="phase active">
         <label for="prompt">What is your video about?</label>
-        <textarea id="prompt" rows="4"
-          placeholder="e.g. A documentary about the fall of the Roman Empire"></textarea>
+        <textarea id="prompt" rows="4" placeholder="e.g. Create a 5-minute educational video about black holes"></textarea>
 
         <div class="row">
           <div>
             <label for="minutes">Length (minutes)</label>
             <select id="minutes">
               <option value="1">1</option>
-              <option value="5">5</option>
+              <option value="5" selected>5</option>
               <option value="10">10</option>
               <option value="15">15</option>
               <option value="20">20</option>
-              <option value="30" selected>30</option>
+              <option value="30">30</option>
             </select>
           </div>
           <div>
@@ -47,83 +63,94 @@
           </div>
           <div>
             <label for="voice">Narrator voice</label>
-            <select id="voice">
-              <option value="narrator">Narrator (American Male)</option>
-              <option value="storyteller">Storyteller (British Male)</option>
-              <option value="documentary">Documentary (American Female)</option>
-              <option value="female_warm">Female Warm (American)</option>
-              <option value="british_female">British Female</option>
-              <option value="australian">Australian Male</option>
+            <input id="voice" value="narrator" />
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="model">Model</label>
+            <input id="model" value="llama3:8b" />
+          </div>
+          <div>
+            <label for="style">Style</label>
+            <select id="style">
+              <option value="educational" selected>educational</option>
+              <option value="storytelling">storytelling</option>
+              <option value="documentary">documentary</option>
+              <option value="fun">fun</option>
+            </select>
+          </div>
+          <div>
+            <label for="language">Language</label>
+            <select id="language">
+              <option value="auto" selected>auto</option>
+              <option value="en">English</option>
+              <option value="de">German</option>
+              <option value="fr">French</option>
+              <option value="es">Spanish</option>
             </select>
           </div>
         </div>
 
-        <!-- Photo upload -->
-        <section class="upload-section">
-          <h2>Your Photos <span class="badge" id="uploadCount">0 uploaded</span></h2>
-          <p class="upload-hint">
-            Upload photos to use in your video — they cycle across scenes.
-            Leave empty to pull photos automatically from the web.
-          </p>
-          <div class="upload-drop-area" id="dropArea">
-            <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.webp" multiple hidden />
-            <div class="drop-icon">&#128444;</div>
-            <p>Drag &amp; drop or <button type="button" id="browseBtn" class="btn-inline">Browse</button></p>
-            <p class="upload-hint">JPG &bull; PNG &bull; WEBP</p>
+        <div class="row">
+          <div>
+            <label for="transitionStyle">Transition style</label>
+            <select id="transitionStyle">
+              <option value="kenburns" selected>kenburns</option>
+              <option value="fade">fade</option>
+              <option value="none">none</option>
+            </select>
           </div>
-          <div id="uploadStatus" class="upload-status hidden"></div>
-          <div id="uploadedGrid" class="uploaded-grid"></div>
-        </section>
+          <div>
+            <label for="steps">Image steps</label>
+            <input id="steps" type="number" min="5" max="100" value="20" />
+          </div>
+          <div>
+            <label for="seed">Seed (optional)</label>
+            <input id="seed" type="number" placeholder="auto" />
+          </div>
+        </div>
+
+        <div class="checkbox-row">
+          <label><input id="clearCache" type="checkbox" /> Clear cache</label>
+          <label><input id="autoSceneDuration" type="checkbox" /> Auto scene duration</label>
+          <label><input id="profile" type="checkbox" /> Profile run</label>
+        </div>
 
         <button id="generateBtn" class="btn-primary">Generate Script</button>
       </section>
 
-      <!-- ── Step 2: Script review ──────────────────────────────────── -->
       <section id="step-script" class="phase hidden">
         <h2>Review Script</h2>
-        <p class="upload-hint">Edit any scene below, or paste your own script. When happy, click <strong>Approve &amp; Generate Images</strong>.</p>
         <div id="scriptScenes"></div>
-        <div class="phase-actions">
-          <button id="approveScriptBtn" class="btn-primary">Approve &amp; Generate Images</button>
-          <button id="ownScriptBtn" class="btn-secondary">Use My Own Script</button>
-        </div>
-        <!-- Custom script paste area (hidden by default) -->
-        <div id="customScriptArea" class="hidden">
-          <label for="customScript">Paste your script (JSON array of scenes):</label>
-          <textarea id="customScript" rows="10" placeholder='[{"narration":"...","visual_description":"..."},...]'></textarea>
-          <button id="submitCustomScriptBtn" class="btn-primary" style="margin-top:0.6rem">Submit My Script</button>
-        </div>
-        <div id="scriptStatus" class="phase-status"></div>
+        <button id="approveScriptBtn" class="btn-primary">Approve &amp; Generate Images</button>
       </section>
 
-      <!-- ── Step 3: Image review ───────────────────────────────────── -->
       <section id="step-images" class="phase hidden">
         <h2>Review Images</h2>
-        <p class="upload-hint">Replace any image you don't like, then approve to generate audio.</p>
+        <div id="thumbnailGrid" class="thumb-grid"></div>
         <div id="imageGrid" class="review-grid"></div>
-        <div class="phase-actions">
-          <button id="approveImagesBtn" class="btn-primary">Approve &amp; Generate Audio</button>
-        </div>
-        <div id="imagesStatus" class="phase-status"></div>
+        <button id="approveImagesBtn" class="btn-primary">Approve &amp; Generate Audio</button>
       </section>
 
-      <!-- ── Step 4: Audio review ───────────────────────────────────── -->
       <section id="step-audio" class="phase hidden">
         <h2>Review Audio</h2>
-        <p class="upload-hint">Listen to each narration. Replace any clip, then approve to render.</p>
         <div id="audioList" class="review-list"></div>
-        <div class="phase-actions">
-          <button id="approveAudioBtn" class="btn-primary">Approve &amp; Render Video</button>
-        </div>
-        <div id="audioStatus" class="phase-status"></div>
+        <button id="approveAudioBtn" class="btn-primary">Approve &amp; Render Video</button>
       </section>
 
-      <!-- ── Step 5: Render ─────────────────────────────────────────── -->
       <section id="step-render" class="phase hidden">
         <h2>Rendering Video</h2>
         <div id="renderStatus" class="phase-status">Starting render…</div>
         <progress id="progressBar" max="100" value="0"></progress>
-        <a id="downloadLink" href="#" class="hidden btn-primary" download>⬇ Download MP4</a>
+        <video id="previewVideo" controls class="hidden"></video>
+        <a id="downloadLink" href="#" class="hidden btn-primary" download>Download MP4</a>
+      </section>
+
+      <section class="logs">
+        <h2>Live Logs</h2>
+        <pre id="logBox"></pre>
       </section>
     </main>
 

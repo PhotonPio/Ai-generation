@@ -1,228 +1,167 @@
-# ai-video-generator
+# AI Video Generator (Local, Free, Open Source)
 
-Complete open-source pipeline for generating up to 30-minute narrated videos from a single text prompt using free local tools only.
+End-to-end local pipeline that generates narrated videos from one prompt using open-source models and tools.
 
-## Features
+## New Features
 
-- Public static frontend (`frontend/`) deployable on GitHub Pages.
-- Python backend (`backend/`) for orchestration.
-- Script generation with local Ollama (Llama 3 or Mistral).
-- Image generation with Stable Diffusion (AUTOMATIC1111 API or Diffusers fallback).
-- Voice narration with Piper TTS (espeak fallback).
-- Video assembly with FFmpeg.
-- Optional subtitles, background music, and thumbnail generation.
-- GitHub Actions workflow for CPU-based rendering and artifact upload.
+- FastAPI backend with HTTP Basic auth (`API_USER` / `API_PASS`) and WebSocket live logs.
+- Two-stage script generation (outline -> scene JSON) with selectable Ollama model.
+- Style controls: `educational`, `storytelling`, `documentary`, `fun`.
+- Multi-language flow with language auto-detection (`langdetect`) and multilingual Piper voice mapping.
+- MoviePy transitions and Ken Burns-style motion (`--transition-style fade|kenburns|none`).
+- 3 thumbnail variants per job (`cinematic`, `minimalist`, `vibrant`) and frontend thumbnail picker.
+- Theme-based CC0 music selection from `backend/assets/music` with 15% background mix.
+- Parallel scene processing for script prep, image generation, and audio generation.
+- Scene/image/audio cache reuse via SHA-256 keys.
+- Optional dynamic scene duration (`--auto-scene-duration`) and max scene cap (`--max-scenes`).
+- Optional profiling (`--profile`) to generate `profile_stats.txt`.
+- Added unit tests under `tests/`.
 
-## Repository Structure
+## Repository Layout
 
 ```text
-ai-video-generator/
-├── README.md
-├── requirements.txt
-├── frontend/
-│   ├── index.html
-│   ├── app.js
-│   └── styles.css
-├── backend/
-│   ├── main.py
-│   ├── script_generator.py
-│   ├── scene_builder.py
-│   ├── image_generator.py
-│   ├── voice_generator.py
-│   ├── video_renderer.py
-│   ├── models/
-│   ├── assets/
-│   ├── output/
-│   │   ├── images/
-│   │   ├── audio/
-│   │   ├── segments/
-│   │   ├── subtitles/
-│   │   ├── music/
-│   │   ├── thumbnails/
-│   │   ├── video/
-│   │   └── jobs/
-│   └── scripts/
-│       └── run_pipeline.py
-└── .github/
-    └── workflows/
-        └── render.yml
+backend/
+  main.py
+  config.py
+  script_generator.py
+  scene_builder.py
+  image_generator.py
+  voice_generator.py
+  video_renderer.py
+  scripts/run_pipeline.py
+  assets/music/
+frontend/
+requirements.txt
+.github/workflows/render.yml
+tests/test_pipeline.py
 ```
 
-## End-to-end Flow
+## Requirements
 
-1. User enters prompt + length in frontend.
-2. Frontend calls `POST /generate`.
-3. Backend creates a render job:
-   - generates scene script
-   - builds scene plan
-   - generates one image per scene
-   - generates one narration audio per scene
-   - renders scene video clips
-   - concatenates final MP4
-   - creates subtitles + music + thumbnail
-4. Frontend polls `GET /status/<job_id>`.
-5. User downloads final video from `GET /download/<job_id>`.
+- Python 3.10+
+- FFmpeg + ffprobe
+- espeak (fallback TTS)
+- Optional local services/models:
+  - Ollama (`llama3:8b`, `mistral`, etc.)
+  - AUTOMATIC1111 API (`--api`) for best image quality
+  - Piper CLI + voice files (auto-download supported)
 
----
-
-## Prerequisites
-
-### 1) Python
-- Python 3.10+ recommended.
-
-### 2) FFmpeg
-- Linux: `sudo apt-get install -y ffmpeg`
-- macOS: `brew install ffmpeg`
-- Windows: install from official FFmpeg builds and add to `PATH`.
-
-### 3) Ollama (LLM)
-Install Ollama and pull a free model:
+Install:
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3
-# OR
-ollama pull mistral
-```
-
-### 4) Stable Diffusion
-Use either option:
-
-#### Option A: AUTOMATIC1111 WebUI API (recommended)
-- Install and run AUTOMATIC1111 with `--api` flag.
-- Ensure endpoint is available at `http://127.0.0.1:7860/sdapi/v1/txt2img`.
-
-#### Option B: Diffusers fallback
-- Backend will attempt to run Stable Diffusion v1.5 on CPU if API is unavailable.
-- First run downloads model weights.
-
-### 5) Piper TTS
-Download Piper binary and an ONNX voice model (example):
-- `backend/models/en_US-lessac-medium.onnx`
-
-If Piper is unavailable, pipeline falls back to `espeak`.
-
----
-
-## Installation
-
-```bash
-git clone <your-repo-url> ai-video-generator
-cd ai-video-generator
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Install optional TTS fallback:
+## Configuration
 
-```bash
-sudo apt-get install -y espeak
-```
+All major options are in `backend/config.py` and overridable via env vars.
 
----
+Key env vars:
 
-## Run Backend
+- `API_USER`, `API_PASS`, `AUTH_ENABLED`
+- `OLLAMA_URL`, `OLLAMA_MODEL`
+- `DEFAULT_STYLE`, `DEFAULT_VOICE`
+- `TRANSITION_STYLE`, `TRANSITION_SECONDS`
+- `MAX_WORKERS_CPU`, `MAX_WORKERS_GPU`
+- `SD_STEPS`, `SD_MODEL`, `A1111_URL`
+- `ENABLE_CLIP_SCORING`, `CLIP_THRESHOLD`, `CLIP_RETRIES`
+- `MAX_SCENES`
+
+## Run Backend (FastAPI)
 
 ```bash
 cd backend
-python main.py
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Backend runs on `http://localhost:8000`.
-
-## Run Frontend Locally
-
-From repository root:
+Frontend (static):
 
 ```bash
 python -m http.server 5500
+# open http://localhost:5500/frontend/
 ```
 
-Open `http://localhost:5500/frontend/`.
-
----
-
-## Generate a Video
-
-Example prompt:
-
-> Create a 30 minute documentary about the fall of the Roman Empire.
-
-In UI:
-1. Enter prompt
-2. Select 30 minutes
-3. Click **Generate Video**
-4. Wait for progress to reach 100%
-5. Download MP4
-
-Output files:
-- images: `backend/output/images/scene001.png`
-- narration: `backend/output/audio/scene001.wav`
-- final video: `backend/output/video/<job_id>_final.mp4`
-- subtitles: `backend/output/subtitles/<job_id>.srt`
-
----
-
-## CLI Rendering
+## CLI Usage
 
 ```bash
 python backend/scripts/run_pipeline.py \
-  --prompt "Create a 10 minute educational video about black holes" \
-  --minutes 10 \
-  --scene-seconds 8
+  --prompt "Create a 5-minute educational video about black holes" \
+  --minutes 5 \
+  --scene-seconds 8 \
+  --model llama3:8b \
+  --style educational \
+  --language auto \
+  --voice en_US-lessac-medium \
+  --transition-style kenburns \
+  --steps 20 \
+  --auto-scene-duration \
+  --max-scenes 300
 ```
 
----
+Additional flags:
 
-## GitHub Pages Deployment (Frontend)
+- `--seed <int>`: reproducible image generation seed.
+- `--clear-cache`: clear image/audio cache before run.
+- `--profile`: save cProfile stats to project output.
+- `--transcribe`: enables Whisper hooks for audio-driven flows.
 
-1. Push repository to GitHub.
-2. In GitHub repo settings, enable **Pages** from branch (e.g. `main`) and folder `/frontend`.
-3. Configure backend URL for deployed page by editing `frontend/app.js` default `API_BASE` or setting `localStorage.apiBase` in browser.
+## Frontend Improvements
 
----
+- Model/style/language/transition options.
+- Per-phase progress bars.
+- Live log streaming via `/ws/jobs/{job_id}/logs`.
+- Thumbnail options panel.
+- 10-second preview playback during render (`/jobs/{job_id}/preview`).
 
-## GitHub Actions Rendering
+## Security
 
-Workflow: `.github/workflows/render.yml`
+HTTP Basic auth is enabled by default.
 
-- Trigger manually (`workflow_dispatch`)
-- Inputs: prompt, minutes, scene_seconds
-- Installs Python + FFmpeg + dependencies
-- Runs CLI pipeline
-- Uploads generated MP4 as artifact
-
-> Note: GitHub-hosted runners are CPU-only and can be slow for long renders.
-
----
-
-## Example Prompts
-
-- "Create a 30 minute documentary about the fall of the Roman Empire."
-- "Create a 20 minute narrated explainer on climate tipping points."
-- "Create a 15 minute storytelling video about Ada Lovelace and early computing."
-
----
-
-## Test / Health Commands
+- Default (change immediately): `admin` / `changeme`
+- Disable only in trusted local environments:
 
 ```bash
-python -m py_compile backend/*.py backend/scripts/run_pipeline.py
-python backend/main.py
-curl http://localhost:8000/health
+export AUTH_ENABLED=false
 ```
 
----
+## Performance Tips
 
-## Notes on 30-minute Generation
+- Enable A1111 with optimized launch flags (`--opt-sdp-attention` recommended).
+- Keep `--transition-style kenburns` for good quality/perf balance.
+- Use `--steps 20` for preview runs.
+- Use `--clear-cache` only when needed; caching can save major rerun time.
 
-For 30 minutes at 8 seconds per scene:
-- total seconds: `1800`
-- total scenes: `225`
+## Benchmarks (Expected)
 
-This is computationally heavy on CPU-only systems. For best results:
-- run Stable Diffusion on GPU
-- pre-download models
-- choose 10-second scene durations to reduce scene count
+On multi-core CPU with caching and parallel workers enabled:
 
+- Image + audio stage wall-time reduction: ~50-70%.
+- End-to-end rerun speedup (same prompt): often >60% due to cache hits.
+
+## Multi-language Notes
+
+- Prompt language is auto-detected.
+- Voice defaults mapped by language (e.g. `en`, `de`, `fr`, `es`).
+- Subtitles are emitted in the same narration language.
+
+## Music Setup
+
+Place CC0 `.mp3` tracks in `backend/assets/music/`.
+Suggested naming: `calm_*`, `epic_*`, `uplifting_*` so theme matcher can prioritize tracks.
+
+## Tests
+
+```bash
+pytest -q
+```
+
+Included tests cover:
+
+- scene count cap logic
+- style/language script package behavior
+- dynamic scene duration bounds
+- language-to-voice mapping
+- deterministic image cache keys
+- SRT time formatting
