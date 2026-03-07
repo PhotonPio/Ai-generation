@@ -1,2 +1,31 @@
 __pycache__/
 *.pyc
+
+# Virtual environment
+.venv/
+
+# Editor
+.vscode/
+
+# User-uploaded source photos (local only)
+backend/assets/uploads/
+
+# Per-job intermediate files — only the final video.mp4 is kept
+backend/output/projects/*/images/
+backend/output/projects/*/audio/
+backend/output/projects/*/segments/
+backend/output/projects/*/video_raw.mp4
+backend/output/projects/*/video_sub.mp4
+backend/output/projects/*/music.wav
+
+# Legacy flat output dirs (pre-refactor)
+backend/output/audio/
+backend/output/images/
+backend/output/segments/
+backend/output/jobs/
+backend/output/script_*.json
+backend/output/subtitles/
+backend/output/video/
+backend/output/music/
+backend/output/thumbnails/
+backend/output/.DS_Store

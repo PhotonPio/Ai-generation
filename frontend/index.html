@@ -34,7 +34,37 @@
             <option value="10">10</option>
           </select>
         </div>
+        <div>
+          <label for="voice">Narrator Voice</label>
+          <select id="voice">
+            <option value="narrator">Narrator (American Male)</option>
+            <option value="storyteller">Storyteller (British Male)</option>
+            <option value="documentary">Documentary (American Female)</option>
+            <option value="female_warm">Female Warm (American)</option>
+            <option value="british_female">British Female</option>
+            <option value="australian">Australian Male</option>
+          </select>
+        </div>
       </div>
+
+      <!-- Photo Upload Section -->
+      <section class="upload-section">
+        <h2>Photos <span class="badge" id="uploadCount">0 uploaded</span></h2>
+        <p class="upload-hint">
+          Upload your own photos to use in the video — they cycle across scenes in order.
+          Leave empty to pull high-quality realistic photos automatically from the web.
+        </p>
+
+        <div class="upload-drop-area" id="dropArea">
+          <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.webp" multiple hidden />
+          <div class="drop-icon">&#128444;</div>
+          <p>Drag &amp; drop photos here or <button type="button" id="browseBtn" class="btn-inline">Browse Files</button></p>
+          <p class="upload-hint">JPG &bull; PNG &bull; WEBP &mdash; landscape orientation recommended</p>
+        </div>
+
+        <div id="uploadStatus" class="upload-status hidden"></div>
+        <div id="uploadedGrid" class="uploaded-grid"></div>
+      </section>
 
       <button id="generateBtn">Generate Video</button>
 
