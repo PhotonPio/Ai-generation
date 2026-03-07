@@ -62,6 +62,12 @@ async function pollStatus(jobId) {
       downloadLink.classList.remove('hidden');
       generateBtn.disabled = false;
     }
+
+    if (job.status === 'failed') {
+      clearInterval(timer);
+      statusText.textContent = `Status: ${job.message}`;
+      generateBtn.disabled = false;
+    }
   }, 4000);
 }
 
