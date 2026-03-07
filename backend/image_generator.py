@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import subprocess
 from pathlib import Path
 
@@ -37,9 +38,7 @@ class ImageGenerator:
             "sampler_name": "DPM++ 2M",
         }
         try:
-            response = requests.post(
-                f"{self.sd_api_url}/sdapi/v1/txt2img", json=payload, timeout=180
-            )
+            response = requests.post(f"{self.sd_api_url}/sdapi/v1/txt2img", json=payload, timeout=180)
             response.raise_for_status()
             data = response.json()
             encoded = data.get("images", [""])[0]
@@ -53,12 +52,12 @@ class ImageGenerator:
             return False
 
     def _generate_via_diffusers_script(self, prompt: str, output_path: Path, width: int, height: int) -> bool:
+        safe_prompt = json.dumps(prompt)
         script = (
             "from diffusers import StableDiffusionPipeline\n"
-            "import torch\n"
             "pipe=StableDiffusionPipeline.from_pretrained('runwayml/stable-diffusion-v1-5')\n"
             "pipe=pipe.to('cpu')\n"
-            f"image=pipe('{prompt.replace('\\', ' ').replace('"', '')}',height={height},width={width},num_inference_steps=20).images[0]\n"
+            f"image=pipe({safe_prompt},height={height},width={width},num_inference_steps=20).images[0]\n"
             f"image.save(r'{output_path}')\n"
         )
         try:

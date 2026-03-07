@@ -7,8 +7,8 @@ from scene_builder import Scene
 
 
 class VoiceGenerator:
-    def __init__(self, piper_model_path: str = "models/en_US-lessac-medium.onnx") -> None:
-        self.piper_model_path = Path(piper_model_path)
+    def __init__(self, model_path: str | Path = "models/en_US-lessac-medium.onnx") -> None:
+        self.piper_model_path = Path(model_path)
 
     def generate_scene_audio(self, scene: Scene, output_path: Path) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -24,6 +24,7 @@ class VoiceGenerator:
     def _generate_with_piper(self, text: str, output_path: Path) -> bool:
         if not self.piper_model_path.exists():
             return False
+
         cmd = [
             "bash",
             "-lc",

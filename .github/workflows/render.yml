@@ -51,6 +51,6 @@ jobs:
         with:
           name: generated-video
           path: |
-            backend/output/video/*_final.mp4
-            backend/output/subtitles/*.srt
-            backend/output/thumbnails/*.jpg
+            output/video/*_final.mp4
+            output/subtitles/*.srt
+            output/thumbnails/*.jpg
