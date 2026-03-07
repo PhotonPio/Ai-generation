@@ -3,75 +3,127 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Open AI Video Generator</title>
+    <title>AI Video Generator</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="container">
-      <h1>Open-Source AI Video Generator</h1>
-      <p>Create documentaries, explainers, and storytelling videos up to 30 minutes from one prompt.</p>
+      <h1>AI Video Generator</h1>
 
-      <label for="prompt">Prompt</label>
-      <textarea id="prompt" rows="5" placeholder="Create a 30 minute documentary about the fall of the Roman Empire."></textarea>
+      <!-- Step indicator -->
+      <nav class="steps" id="stepNav">
+        <div class="step-item active" data-step="setup">1 Setup</div>
+        <div class="step-item" data-step="script">2 Script</div>
+        <div class="step-item" data-step="images">3 Images</div>
+        <div class="step-item" data-step="audio">4 Audio</div>
+        <div class="step-item" data-step="render">5 Render</div>
+      </nav>
 
-      <div class="row">
-        <div>
-          <label for="minutes">Video Length (minutes)</label>
-          <select id="minutes">
-            <option value="5">5</option>
-            <option value="10">10</option>
-            <option value="15">15</option>
-            <option value="20">20</option>
-            <option value="25">25</option>
-            <option value="30" selected>30</option>
-          </select>
-        </div>
-        <div>
-          <label for="sceneSeconds">Scene Length (seconds)</label>
-          <select id="sceneSeconds">
-            <option value="6">6</option>
-            <option value="8" selected>8</option>
-            <option value="10">10</option>
-          </select>
-        </div>
-        <div>
-          <label for="voice">Narrator Voice</label>
-          <select id="voice">
-            <option value="narrator">Narrator (American Male)</option>
-            <option value="storyteller">Storyteller (British Male)</option>
-            <option value="documentary">Documentary (American Female)</option>
-            <option value="female_warm">Female Warm (American)</option>
-            <option value="british_female">British Female</option>
-            <option value="australian">Australian Male</option>
-          </select>
-        </div>
-      </div>
+      <!-- ── Step 1: Setup ──────────────────────────────────────────── -->
+      <section id="step-setup" class="phase active">
+        <label for="prompt">What is your video about?</label>
+        <textarea id="prompt" rows="4"
+          placeholder="e.g. A documentary about the fall of the Roman Empire"></textarea>
 
-      <!-- Photo Upload Section -->
-      <section class="upload-section">
-        <h2>Photos <span class="badge" id="uploadCount">0 uploaded</span></h2>
-        <p class="upload-hint">
-          Upload your own photos to use in the video — they cycle across scenes in order.
-          Leave empty to pull high-quality realistic photos automatically from the web.
-        </p>
-
-        <div class="upload-drop-area" id="dropArea">
-          <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.webp" multiple hidden />
-          <div class="drop-icon">&#128444;</div>
-          <p>Drag &amp; drop photos here or <button type="button" id="browseBtn" class="btn-inline">Browse Files</button></p>
-          <p class="upload-hint">JPG &bull; PNG &bull; WEBP &mdash; landscape orientation recommended</p>
+        <div class="row">
+          <div>
+            <label for="minutes">Length (minutes)</label>
+            <select id="minutes">
+              <option value="1">1</option>
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="15">15</option>
+              <option value="20">20</option>
+              <option value="30" selected>30</option>
+            </select>
+          </div>
+          <div>
+            <label for="sceneSeconds">Scene length (sec)</label>
+            <select id="sceneSeconds">
+              <option value="6">6</option>
+              <option value="8" selected>8</option>
+              <option value="10">10</option>
+            </select>
+          </div>
+          <div>
+            <label for="voice">Narrator voice</label>
+            <select id="voice">
+              <option value="narrator">Narrator (American Male)</option>
+              <option value="storyteller">Storyteller (British Male)</option>
+              <option value="documentary">Documentary (American Female)</option>
+              <option value="female_warm">Female Warm (American)</option>
+              <option value="british_female">British Female</option>
+              <option value="australian">Australian Male</option>
+            </select>
+          </div>
         </div>
 
-        <div id="uploadStatus" class="upload-status hidden"></div>
-        <div id="uploadedGrid" class="uploaded-grid"></div>
+        <!-- Photo upload -->
+        <section class="upload-section">
+          <h2>Your Photos <span class="badge" id="uploadCount">0 uploaded</span></h2>
+          <p class="upload-hint">
+            Upload photos to use in your video — they cycle across scenes.
+            Leave empty to pull photos automatically from the web.
+          </p>
+          <div class="upload-drop-area" id="dropArea">
+            <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.webp" multiple hidden />
+            <div class="drop-icon">&#128444;</div>
+            <p>Drag &amp; drop or <button type="button" id="browseBtn" class="btn-inline">Browse</button></p>
+            <p class="upload-hint">JPG &bull; PNG &bull; WEBP</p>
+          </div>
+          <div id="uploadStatus" class="upload-status hidden"></div>
+          <div id="uploadedGrid" class="uploaded-grid"></div>
+        </section>
+
+        <button id="generateBtn" class="btn-primary">Generate Script</button>
       </section>
 
-      <button id="generateBtn">Generate Video</button>
+      <!-- ── Step 2: Script review ──────────────────────────────────── -->
+      <section id="step-script" class="phase hidden">
+        <h2>Review Script</h2>
+        <p class="upload-hint">Edit any scene below, or paste your own script. When happy, click <strong>Approve &amp; Generate Images</strong>.</p>
+        <div id="scriptScenes"></div>
+        <div class="phase-actions">
+          <button id="approveScriptBtn" class="btn-primary">Approve &amp; Generate Images</button>
+          <button id="ownScriptBtn" class="btn-secondary">Use My Own Script</button>
+        </div>
+        <!-- Custom script paste area (hidden by default) -->
+        <div id="customScriptArea" class="hidden">
+          <label for="customScript">Paste your script (JSON array of scenes):</label>
+          <textarea id="customScript" rows="10" placeholder='[{"narration":"...","visual_description":"..."},...]'></textarea>
+          <button id="submitCustomScriptBtn" class="btn-primary" style="margin-top:0.6rem">Submit My Script</button>
+        </div>
+        <div id="scriptStatus" class="phase-status"></div>
+      </section>
 
-      <section class="progress-section">
-        <div id="statusText">Status: idle</div>
+      <!-- ── Step 3: Image review ───────────────────────────────────── -->
+      <section id="step-images" class="phase hidden">
+        <h2>Review Images</h2>
+        <p class="upload-hint">Replace any image you don't like, then approve to generate audio.</p>
+        <div id="imageGrid" class="review-grid"></div>
+        <div class="phase-actions">
+          <button id="approveImagesBtn" class="btn-primary">Approve &amp; Generate Audio</button>
+        </div>
+        <div id="imagesStatus" class="phase-status"></div>
+      </section>
+
+      <!-- ── Step 4: Audio review ───────────────────────────────────── -->
+      <section id="step-audio" class="phase hidden">
+        <h2>Review Audio</h2>
+        <p class="upload-hint">Listen to each narration. Replace any clip, then approve to render.</p>
+        <div id="audioList" class="review-list"></div>
+        <div class="phase-actions">
+          <button id="approveAudioBtn" class="btn-primary">Approve &amp; Render Video</button>
+        </div>
+        <div id="audioStatus" class="phase-status"></div>
+      </section>
+
+      <!-- ── Step 5: Render ─────────────────────────────────────────── -->
+      <section id="step-render" class="phase hidden">
+        <h2>Rendering Video</h2>
+        <div id="renderStatus" class="phase-status">Starting render…</div>
         <progress id="progressBar" max="100" value="0"></progress>
-        <a id="downloadLink" href="#" class="hidden" download>Download MP4</a>
+        <a id="downloadLink" href="#" class="hidden btn-primary" download>⬇ Download MP4</a>
       </section>
     </main>
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+import requests
 
 
 @dataclass
@@ -16,7 +17,7 @@ class ScenePlan:
 class ScriptGenerator:
     def __init__(self, model: str = "llama3", ollama_url: str = "http://localhost:11434") -> None:
         self.model = model
-        self.ollama_url = ollama_url
+        self.ollama_url = ollama_url.rstrip("/")
 
     def _target_scene_count(self, total_minutes: int, scene_seconds: int) -> int:
         total_seconds = max(total_minutes, 1) * 60
@@ -26,37 +27,35 @@ class ScriptGenerator:
         scene_count = self._target_scene_count(total_minutes, scene_seconds)
         instruction = (
             "You are a documentary and storytelling script engine. "
-            "Return strict JSON with key 'scenes' containing an array of objects with fields: "
-            "narration and visual_description. Ensure narration is concise and timed for one scene. "
+            "Return ONLY strict JSON with key 'scenes' containing an array of objects with fields: "
+            "'narration' and 'visual_description'. No extra text, no markdown. "
+            "Ensure narration is concise and timed for one scene. "
             f"Generate exactly {scene_count} scenes for this request: {prompt}"
         )
 
-        cmd = [
-            "ollama",
-            "run",
-            self.model,
-            instruction,
-        ]
-
         try:
-            output = subprocess.check_output(cmd, text=True)
-            parsed = self._parse_ollama_output(output)
+            response = requests.post(
+                f"{self.ollama_url}/api/generate",
+                json={"model": self.model, "prompt": instruction, "stream": False},
+                timeout=180,
+            )
+            response.raise_for_status()
+            output = response.json().get("response", "")
+            parsed = self._parse_output(output)
             if parsed:
                 return parsed
-        except subprocess.CalledProcessError:
+        except Exception:
             pass
 
         return self._fallback_scene_script(prompt=prompt, scene_count=scene_count)
 
-    def _parse_ollama_output(self, output: str) -> list[ScenePlan]:
+    def _parse_output(self, output: str) -> list[ScenePlan]:
         start = output.find("{")
         end = output.rfind("}")
         if start == -1 or end == -1 or end <= start:
             return []
-
-        payload = output[start : end + 1]
         try:
-            data = json.loads(payload)
+            data = json.loads(output[start: end + 1])
         except json.JSONDecodeError:
             return []
 
@@ -71,22 +70,20 @@ class ScriptGenerator:
 
     def _fallback_scene_script(self, prompt: str, scene_count: int) -> list[ScenePlan]:
         base = f"Narrated explainer about: {prompt}."
-        scenes: list[ScenePlan] = []
-        for i in range(1, scene_count + 1):
-            scenes.append(
-                ScenePlan(
-                    index=i,
-                    narration=(
-                        f"Scene {i}. {base} This section advances the story with historical context, "
-                        "key events, analysis, and transition to the next part."
-                    ),
-                    visual_description=(
-                        f"Cinematic documentary illustration for scene {i}: {prompt}, dramatic lighting, "
-                        "high detail, 16:9 composition."
-                    ),
-                )
+        return [
+            ScenePlan(
+                index=i,
+                narration=(
+                    f"Scene {i}. {base} This section advances the story with historical context, "
+                    "key events, analysis, and transition to the next part."
+                ),
+                visual_description=(
+                    f"Cinematic documentary illustration for scene {i}: {prompt}, dramatic lighting, "
+                    "high detail, 16:9 composition."
+                ),
             )
-        return scenes
+            for i in range(1, scene_count + 1)
+        ]
 
     def save_script_manifest(self, scenes: list[ScenePlan], destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -94,11 +91,11 @@ class ScriptGenerator:
             "scene_count": len(scenes),
             "scenes": [
                 {
-                    "index": scene.index,
-                    "narration": scene.narration,
-                    "visual_description": scene.visual_description,
+                    "index": s.index,
+                    "narration": s.narration,
+                    "visual_description": s.visual_description,
                 }
-                for scene in scenes
+                for s in scenes
             ],
         }
         destination.write_text(json.dumps(payload, indent=2), encoding="utf-8")
