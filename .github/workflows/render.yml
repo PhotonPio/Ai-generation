@@ -1,0 +1,56 @@
+name: Render AI Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Video prompt"
+        required: true
+        default: "Create a 5 minute educational video about the Roman Empire"
+      minutes:
+        description: "Video length in minutes"
+        required: true
+        default: "5"
+      scene_seconds:
+        description: "Scene length in seconds"
+        required: true
+        default: "8"
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg and espeak
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run render pipeline
+        run: |
+          python backend/scripts/run_pipeline.py \
+            --prompt "${{ github.event.inputs.prompt }}" \
+            --minutes "${{ github.event.inputs.minutes }}" \
+            --scene-seconds "${{ github.event.inputs.scene_seconds }}"
+
+      - name: Upload video artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-video
+          path: |
+            backend/output/video/*_final.mp4
+            backend/output/subtitles/*.srt
+            backend/output/thumbnails/*.jpg

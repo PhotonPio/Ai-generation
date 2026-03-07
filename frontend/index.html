@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Open AI Video Generator</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Open-Source AI Video Generator</h1>
+      <p>Create documentaries, explainers, and storytelling videos up to 30 minutes from one prompt.</p>
+
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" rows="5" placeholder="Create a 30 minute documentary about the fall of the Roman Empire."></textarea>
+
+      <div class="row">
+        <div>
+          <label for="minutes">Video Length (minutes)</label>
+          <select id="minutes">
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="15">15</option>
+            <option value="20">20</option>
+            <option value="25">25</option>
+            <option value="30" selected>30</option>
+          </select>
+        </div>
+        <div>
+          <label for="sceneSeconds">Scene Length (seconds)</label>
+          <select id="sceneSeconds">
+            <option value="6">6</option>
+            <option value="8" selected>8</option>
+            <option value="10">10</option>
+          </select>
+        </div>
+      </div>
+
+      <button id="generateBtn">Generate Video</button>
+
+      <section class="progress-section">
+        <div id="statusText">Status: idle</div>
+        <progress id="progressBar" max="100" value="0"></progress>
+        <a id="downloadLink" href="#" class="hidden" download>Download MP4</a>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
