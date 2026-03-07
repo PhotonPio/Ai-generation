@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import uuid
+from pathlib import Path
 
-from main import run_pipeline, _update_job, jobs
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from main import run_pipeline
 
 
 def main() -> None:
@@ -14,16 +18,9 @@ def main() -> None:
     args = parser.parse_args()
 
     job_id = uuid.uuid4().hex[:12]
-    jobs[job_id] = {
-        "job_id": job_id,
-        "status": "queued",
-        "progress": 0,
-        "message": "Queued",
-    }
-    _update_job(job_id, message="Starting CLI pipeline")
     run_pipeline(job_id=job_id, prompt=args.prompt, minutes=args.minutes, scene_seconds=args.scene_seconds)
     print(f"Completed job: {job_id}")
-    print(f"Download path: backend/output/video/{job_id}_final.mp4")
+    print(f"Video path: backend/output/projects/{job_id}/video.mp4")
 
 
 if __name__ == "__main__":

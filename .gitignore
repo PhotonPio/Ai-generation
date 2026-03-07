@@ -11,6 +11,7 @@ __pycache__/
 backend/assets/uploads/
 
 # Per-job intermediate files — only the final video.mp4 is kept
+backend/output/projects/
 backend/output/projects/*/images/
 backend/output/projects/*/audio/
 backend/output/projects/*/segments/

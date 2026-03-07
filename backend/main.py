@@ -38,7 +38,9 @@ def _project_dir(job_id: str) -> Path:
 def _update_job(job_id: str, **kwargs: object) -> None:
     with lock:
         jobs[job_id].update(kwargs)
-        (_project_dir(job_id) / "job.json").write_text(
+        project_dir = _project_dir(job_id)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "job.json").write_text(
             json.dumps(jobs[job_id], indent=2), encoding="utf-8"
         )
 
@@ -161,6 +163,36 @@ def _phase_render(job_id: str) -> None:
                     manifest_url=f"/manifest/{job_id}")
     except Exception as exc:
         _update_job(job_id, status="failed", message=f"Render error: {exc}")
+
+
+def run_pipeline(job_id: str, prompt: str, minutes: int, scene_seconds: int, voice: str = DEFAULT_VOICE) -> None:
+    """Run all phases sequentially (script -> images -> audio -> render) for CLI/workflows."""
+    project_dir = _project_dir(job_id)
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    with lock:
+        jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "phase": "script",
+            "progress": 0,
+            "message": "Queued",
+            "prompt": prompt,
+            "minutes": minutes,
+            "scene_seconds": scene_seconds,
+            "voice": voice if voice in VOICE_PRESETS else DEFAULT_VOICE,
+            "download_url": None,
+            "manifest_url": None,
+        }
+        (project_dir / "job.json").write_text(json.dumps(jobs[job_id], indent=2), encoding="utf-8")
+
+    for phase in (_phase_script, _phase_images, _phase_audio, _phase_render):
+        phase(job_id)
+        with lock:
+            status = jobs.get(job_id, {}).get("status")
+            message = jobs.get(job_id, {}).get("message")
+        if status == "failed":
+            raise RuntimeError(str(message))
 
 
 def _start_thread(target, **kwargs) -> None:
@@ -348,11 +380,14 @@ def replace_audio(job_id: str, scene_n: int):
         file.save(str(dest))
     else:
         import subprocess, tempfile
-        tmp = Path(tempfile.mktemp(suffix=ext))
-        file.save(str(tmp))
-        subprocess.check_call(["ffmpeg", "-y", "-i", str(tmp), str(dest)],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        tmp.unlink(missing_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp_file:
+            tmp = Path(tmp_file.name)
+        try:
+            file.save(str(tmp))
+            subprocess.check_call(["ffmpeg", "-y", "-i", str(tmp), str(dest)],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        finally:
+            tmp.unlink(missing_ok=True)
     return jsonify({"ok": True, "url": f"/jobs/{job_id}/audio/{scene_n}"})
 
 

@@ -26,6 +26,7 @@ class VideoRenderer:
                 "-i", str(image_path),
                 "-i", str(audio_path),
                 "-c:v", "libx264",
+                "-preset", "veryfast",
                 "-tune", "stillimage",
                 "-c:a", "aac",
                 "-b:a", "192k",
@@ -75,7 +76,12 @@ class VideoRenderer:
             "-c:a", "copy",
             str(output_path),
         ]
-        subprocess.check_call(cmd)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            if "libass" in (result.stderr or "").lower():
+                subprocess.check_call(["ffmpeg", "-y", "-i", str(video_path), "-c", "copy", str(output_path)])
+            else:
+                raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
         return output_path
 
     def generate_background_music(self, total_seconds: int, output_path: Path) -> Path:
