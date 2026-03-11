@@ -205,4 +205,25 @@ progress {
   border-radius: 10px;
 }
 
+
+.status-banner {
+  padding: 0.65rem 1rem;
+  border-radius: var(--radius);
+  margin-bottom: 0.8rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.status-banner.error {
+  background: rgba(220, 60, 60, 0.15);
+  border: 1px solid #dc3c3c;
+  color: #ff8080;
+}
+
+.status-banner.ok {
+  background: rgba(70, 211, 166, 0.12);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
 .hidden { display: none !important; }

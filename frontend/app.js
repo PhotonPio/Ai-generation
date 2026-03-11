@@ -1,4 +1,12 @@
-const API_BASE = localStorage.getItem('apiBase') || 'http://localhost:8000';
+const API_BASE = (() => {
+  const stored = localStorage.getItem('apiBase');
+  if (stored) return stored;
+  // If served from the backend itself, use same origin
+  if (window.location.port === '8000' || window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return window.location.origin;
+  }
+  return 'http://localhost:8000';
+})();
 
 let currentJobId = null;
 let pollTimer = null;
@@ -30,6 +38,32 @@ const phaseBars = {
   audio: document.getElementById('phaseAudio'),
   render: document.getElementById('phaseRender'),
 };
+
+
+async function checkBackendHealth() {
+  const banner = document.getElementById('statusBanner');
+  try {
+    const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+    if (res.ok) {
+      banner.textContent = '✅ Backend connected — ready to generate.';
+      banner.className = 'status-banner ok';
+      setTimeout(() => banner.classList.add('hidden'), 4000);
+    } else {
+      throw new Error('Non-200 response');
+    }
+  } catch {
+    banner.innerHTML = `
+      ❌ Backend not running. Open your terminal and run:<br>
+      <code style="font-size:0.8rem">./start.sh</code> (Mac/Linux) &nbsp;or&nbsp;
+      <code style="font-size:0.8rem">start.bat</code> (Windows)
+    `;
+    banner.className = 'status-banner error';
+  }
+  banner.classList.remove('hidden');
+}
+
+// Call on page load
+checkBackendHealth();
 
 function authHeader() {
   const user = localStorage.getItem('apiUser') || '';
