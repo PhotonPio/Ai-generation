@@ -43,7 +43,7 @@ class ScriptGenerator:
             parsed = self._parse_ollama_output(output)
             if parsed:
                 return parsed
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, OSError):
             pass
 
         return self._fallback_scene_script(prompt=prompt, scene_count=scene_count)
