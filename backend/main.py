@@ -16,8 +16,9 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from starlette import status
 from werkzeug.utils import secure_filename
 
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover
 
 settings = get_settings()
 BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR.parent / "frontend"
 OUTPUT_DIR = BASE_DIR / "output"
 PROJECTS_DIR = OUTPUT_DIR / "projects"
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg"}
@@ -50,6 +52,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve frontend static assets
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_frontend() -> HTMLResponse:
+    """Serve the main frontend application."""
+
+    index = FRONTEND_DIR / "index.html"
+    if index.exists():
+        return HTMLResponse(content=index.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>Frontend not found</h1>", status_code=404)
+
 
 security = HTTPBasic(auto_error=False)
 
