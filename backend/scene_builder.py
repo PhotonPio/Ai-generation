@@ -41,6 +41,7 @@ class Scene:
     narration: str
     visual_prompt: str
     estimated_duration: float
+    search_keywords: list[str] | None = None
     video_path: Path | None = None
 
 
@@ -105,6 +106,7 @@ class SceneBuilder:
             narration=narration,
             visual_prompt=plan.visual_description,
             estimated_duration=duration,
+            search_keywords=plan.search_keywords,
         )
 
     def build(
