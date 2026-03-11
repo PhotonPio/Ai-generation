@@ -6,9 +6,13 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+import importlib.util
 
-import requests
-from langdetect import detect
+_HAS_LANGDETECT = importlib.util.find_spec("langdetect") is not None
+if _HAS_LANGDETECT:
+    from langdetect import detect
 
 try:
     from .config import get_settings
@@ -77,13 +81,19 @@ class ScriptGenerator:
     def _ask_ollama(self, prompt: str, timeout: int = 180) -> str:
         """Query local Ollama and return the plain response text."""
 
-        response = requests.post(
+        payload = json.dumps({"model": self.model, "prompt": prompt, "stream": False}).encode("utf-8")
+        request = Request(
             f"{self.ollama_url}/api/generate",
-            json={"model": self.model, "prompt": prompt, "stream": False},
-            timeout=timeout,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-        response.raise_for_status()
-        return str(response.json().get("response", "")).strip()
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Failed to query Ollama") from exc
+        return str(body.get("response", "")).strip()
 
     def _normalize_style(self, style: str) -> str:
         """Normalize style to supported values with a safe fallback."""
@@ -94,6 +104,8 @@ class ScriptGenerator:
     def _detect_language(self, prompt: str) -> str:
         """Detect language from input prompt; fallback to English on failure."""
 
+        if not _HAS_LANGDETECT:
+            return "en"
         try:
             lang = detect(prompt)
             return lang if lang else "en"

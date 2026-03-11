@@ -3,10 +3,13 @@ from __future__ import annotations
 """Scene planning utilities for turning script text into timed scene segments."""
 
 import math
+import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-import nltk
+_HAS_NLTK = importlib.util.find_spec("nltk") is not None
+if _HAS_NLTK:
+    import nltk
 
 try:
     from .script_generator import ScenePlan
@@ -59,9 +62,12 @@ class SceneBuilder:
     def _group_short_sentences(self, text: str) -> str:
         """Group short sentence fragments into denser narration blocks."""
 
-        try:
-            sentences = nltk.sent_tokenize(text)
-        except LookupError:
+        if _HAS_NLTK:
+            try:
+                sentences = nltk.sent_tokenize(text)
+            except LookupError:
+                sentences = [s.strip() for s in text.split(".") if s.strip()]
+        else:
             # Offline-safe fallback when NLTK data is unavailable.
             sentences = [s.strip() for s in text.split(".") if s.strip()]
 

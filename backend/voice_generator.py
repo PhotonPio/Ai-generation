@@ -9,9 +9,8 @@ import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import requests
-from tqdm import tqdm
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 try:
     from .config import get_settings
@@ -118,14 +117,12 @@ class VoiceGenerator:
             return target
 
         url = f"{PIPER_RELEASE_BASE}/{model_id}/{model_id}.onnx"
-        response = requests.get(url, stream=True, timeout=120)
-        response.raise_for_status()
-
-        total = int(response.headers.get("content-length", 0))
-        with target.open("wb") as handle:
-            for chunk in tqdm(response.iter_content(chunk_size=8192), total=max(total // 8192, 1), disable=True):
-                if chunk:
-                    handle.write(chunk)
+        try:
+            with urlopen(url, timeout=120) as response:
+                with target.open("wb") as handle:
+                    shutil.copyfileobj(response, handle)
+        except (HTTPError, URLError, TimeoutError) as exc:
+            raise RuntimeError(f"Could not download Piper model: {model_id}") from exc
         return target
 
     def _cache_key(self, text: str, voice_model: str) -> str:
