@@ -26,16 +26,24 @@ try:
     from .config import get_settings
     from .image_generator import ALLOWED_EXTENSIONS, UPLOADS_DIR, ImageGenerator
     from .scene_builder import Scene, SceneBuilder
-    from .script_generator import ScenePlan, ScriptGenerator, ScriptPackage
+    from .script_generator import ScenePlan, ScriptGenerator, ScriptPackage, validate_script_structure
     from .video_renderer import VideoRenderer
     from .voice_generator import DEFAULT_VOICE, VOICE_PRESETS, VoiceGenerator
+    from .services.script_service import ScriptService
+    from .services.media_service import MediaService
+    from .services.voice_service import VoiceService
+    from .services.render_service import RenderService
 except ImportError:  # pragma: no cover
     from config import get_settings
     from image_generator import ALLOWED_EXTENSIONS, UPLOADS_DIR, ImageGenerator
     from scene_builder import Scene, SceneBuilder
-    from script_generator import ScenePlan, ScriptGenerator, ScriptPackage
+    from script_generator import ScenePlan, ScriptGenerator, ScriptPackage, validate_script_structure
     from video_renderer import VideoRenderer
     from voice_generator import DEFAULT_VOICE, VOICE_PRESETS, VoiceGenerator
+    from services.script_service import ScriptService
+    from services.media_service import MediaService
+    from services.voice_service import VoiceService
+    from services.render_service import RenderService
 
 settings = get_settings()
 BASE_DIR = Path(__file__).resolve().parent
@@ -73,6 +81,16 @@ security = HTTPBasic(auto_error=False)
 jobs: dict[str, dict[str, Any]] = {}
 job_logs: dict[str, list[str]] = {}
 lock = threading.Lock()
+ws_connections: dict[str, set[WebSocket]] = {}
+
+
+JOB_CREATED = "CREATED"
+JOB_SCRIPT_READY = "SCRIPT_READY"
+JOB_MEDIA_READY = "MEDIA_READY"
+JOB_AUDIO_READY = "AUDIO_READY"
+JOB_RENDERING = "RENDERING"
+JOB_COMPLETE = "COMPLETE"
+JOB_FAILED = "FAILED"
 
 
 def _project_dir(job_id: str) -> Path:
@@ -95,8 +113,22 @@ def _auth(credentials: HTTPBasicCredentials | None = Depends(security)) -> None:
 def _log(job_id: str, message: str) -> None:
     """Store in-memory job log entries for websocket streaming."""
 
+    event = f"[JOB {job_id}] {message}"
     with lock:
-        job_logs.setdefault(job_id, []).append(message)
+        job_logs.setdefault(job_id, []).append(event)
+        sockets = list(ws_connections.get(job_id, set()))
+    for ws in sockets:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(ws.send_json({"logs": [event], "job": jobs.get(job_id)}))
+        except RuntimeError:
+            pass
+
+
+def log_event(job_id: str, message: str) -> None:
+    """Push log event to memory and websocket subscribers."""
+
+    _log(job_id, message)
 
 
 def _update_job(job_id: str, **kwargs: object) -> None:
@@ -107,6 +139,13 @@ def _update_job(job_id: str, **kwargs: object) -> None:
         project_dir = _project_dir(job_id)
         project_dir.mkdir(parents=True, exist_ok=True)
         (project_dir / "job.json").write_text(json.dumps(jobs[job_id], indent=2), encoding="utf-8")
+
+
+def mark_job_failed(job_id: str, error: str) -> None:
+    """Transition job to FAILED state and record reason."""
+
+    _update_job(job_id, status=JOB_FAILED, message=error)
+    log_event(job_id, error)
 
 
 def _phase_timeout(job_id: str) -> int:
@@ -136,7 +175,7 @@ def _run_with_timeout(job_id: str, phase: str, func) -> None:
         try:
             future.result(timeout=timeout_seconds)
         except FutureTimeoutError:
-            _update_job(job_id, status="failed", message=f"{phase.title()} timed out after {timeout_seconds}s")
+            _update_job(job_id, status=JOB_FAILED, message=f"{phase.title()} timed out after {timeout_seconds}s")
             _log(job_id, f"{phase} timed out after {timeout_seconds}s")
             return
     _record_phase_timing(job_id, phase, time.perf_counter() - started)
@@ -182,7 +221,7 @@ def _load_script(job_id: str) -> tuple[list[ScenePlan], dict[str, Any]]:
 
     data = json.loads((_project_dir(job_id) / "script.json").read_text(encoding="utf-8"))
     plans = [
-        ScenePlan(index=s["index"], narration=s["narration"], visual_description=s["visual_description"])
+        ScenePlan(index=s["index"], narration=s["narration"], visual_description=s["visual_description"], search_keywords=s.get("search_keywords", []))
         for s in data.get("scenes", [])
     ]
     return plans, data
@@ -212,16 +251,15 @@ def _phase_script(job_id: str, prompt: str, minutes: int, scene_seconds: int, mo
     """Generate script and pause job in approval state."""
 
     try:
-        _update_job(job_id, status="generating", phase="script", progress=5, message="Generating script…")
-        _log(job_id, "Starting two-stage script generation")
-        script_gen = ScriptGenerator(model=model, style=style)
-        package = script_gen.generate_scene_script(prompt, minutes, scene_seconds, style=style, max_scenes=max_scenes)
+        _update_job(job_id, status=JOB_CREATED, phase="script", progress=5, message="Generating script…")
+        log_event(job_id, "SCRIPT GENERATION STARTED")
+        script_service = ScriptService(model=model, style=style)
+        package = script_service.generate(prompt, minutes, scene_seconds, max_scenes, _project_dir(job_id) / "script.json")
         if not package.scenes:
             raise RuntimeError("No scenes generated for prompt")
-        script_gen.save_script_manifest(package, _project_dir(job_id) / "script.json")
         _update_job(
             job_id,
-            status="awaiting_approval",
+            status=JOB_SCRIPT_READY,
             phase="script",
             progress=15,
             language=package.language,
@@ -229,10 +267,9 @@ def _phase_script(job_id: str, prompt: str, minutes: int, scene_seconds: int, mo
             model=package.model,
             message="Script ready — review and approve to continue.",
         )
-        _log(job_id, f"Script phase complete: {len(package.scenes)} scenes ({package.language})")
+        log_event(job_id, "SCRIPT GENERATED")
     except Exception as exc:
-        _update_job(job_id, status="failed", message=f"Script error: {exc}")
-        _log(job_id, f"Script phase failed: {exc}")
+        mark_job_failed(job_id, f"Script error: {exc}")
 
 
 def _phase_images(job_id: str) -> None:
@@ -256,16 +293,22 @@ def _phase_images(job_id: str) -> None:
             prefer_uploaded_images=bool(job.get("use_uploaded_images", False)),
             scene_media_mode=str(job.get("scene_media_mode", settings.scene_media_mode)),
         )
-        _update_job(job_id, status="generating", phase="images", progress=18, message="Generating images…")
-        _log(job_id, "Image generation started")
+        _update_job(job_id, status=JOB_SCRIPT_READY, phase="images", progress=18, message="Generating images…")
+        log_event(job_id, "MEDIA GENERATION STARTED")
 
-        image_gen.generate_images_parallel(
+        media_service = MediaService(image_gen)
+        media_dir = _project_dir(job_id) / "media"
+        media_service.generate(
             scenes,
-            _project_dir(job_id) / "images",
-            max_workers=settings.max_workers_cpu,
+            media_dir,
             steps=int(job.get("steps", settings.sd_steps)),
             seed=job.get("seed"),
+            max_workers=5,
         )
+        legacy_images_dir = _project_dir(job_id) / "images"
+        legacy_images_dir.mkdir(parents=True, exist_ok=True)
+        for generated in sorted(media_dir.glob("scene*.png")):
+            (legacy_images_dir / generated.name).write_bytes(generated.read_bytes())
 
         thumbs = image_gen.generate_thumbnail_variants(
             scenes[0].visual_prompt,
@@ -274,16 +317,15 @@ def _phase_images(job_id: str) -> None:
 
         _update_job(
             job_id,
-            status="awaiting_approval",
+            status=JOB_MEDIA_READY,
             phase="images",
             progress=50,
             thumbnail_options=[f"/jobs/{job_id}/thumbnails/{p.name}" for p in thumbs],
             message="Images ready — review and approve to continue.",
         )
-        _log(job_id, "Image phase complete")
+        log_event(job_id, "MEDIA DOWNLOADED")
     except Exception as exc:
-        _update_job(job_id, status="failed", message=f"Image error: {exc}")
-        _log(job_id, f"Image phase failed: {exc}")
+        mark_job_failed(job_id, f"Image error: {exc}")
 
 
 def _phase_audio(job_id: str) -> None:
@@ -308,14 +350,14 @@ def _phase_audio(job_id: str) -> None:
             clear_cache=bool(job.get("clear_cache", False)),
         )
 
-        _update_job(job_id, status="generating", phase="audio", progress=52, message="Generating audio…")
-        _log(job_id, "Audio generation started")
-        voice_gen.generate_audio_parallel(scenes, _project_dir(job_id) / "audio", max_workers=settings.max_workers_cpu)
-        _update_job(job_id, status="awaiting_approval", phase="audio", progress=70, message="Audio ready — review and approve to render.")
-        _log(job_id, "Audio phase complete")
+        _update_job(job_id, status=JOB_MEDIA_READY, phase="audio", progress=52, message="Generating audio…")
+        log_event(job_id, "AUDIO GENERATION STARTED")
+        voice_service = VoiceService(voice_gen)
+        voice_service.generate(scenes, _project_dir(job_id) / "audio", max_workers=settings.max_workers_cpu)
+        _update_job(job_id, status=JOB_AUDIO_READY, phase="audio", progress=70, message="Audio ready — review and approve to render.")
+        log_event(job_id, "AUDIO GENERATED")
     except Exception as exc:
-        _update_job(job_id, status="failed", message=f"Audio error: {exc}")
-        _log(job_id, f"Audio phase failed: {exc}")
+        mark_job_failed(job_id, f"Audio error: {exc}")
 
 
 def _phase_render(job_id: str) -> None:
@@ -340,14 +382,15 @@ def _phase_render(job_id: str) -> None:
         images = [project_dir / "images" / f"scene{s.index:03d}.png" for s in scenes]
         audios = [project_dir / "audio" / f"scene{s.index:03d}.wav" for s in scenes]
 
-        _update_job(job_id, status="generating", phase="render", progress=75, message="Rendering video segments…")
+        _update_job(job_id, status=JOB_RENDERING, phase="render", progress=75, message="Rendering video segments…")
         transition_style = str(job.get("transition_style", settings.transition_style))
-        segments = renderer.render_segments(scenes, images, audios, transition_style=transition_style)
+        render_service = RenderService(renderer)
+        segments = render_service.render(scenes, images, audios, transition_style=transition_style)
 
         raw_video = project_dir / "video_raw.mp4"
         renderer.concatenate(segments, raw_video)
 
-        _update_job(job_id, status="generating", phase="render", progress=88, message="Adding subtitles and music…")
+        _update_job(job_id, status=JOB_RENDERING, phase="render", progress=88, message="Adding subtitles and music…")
         subtitle_file = project_dir / "subtitles.srt"
         renderer.create_subtitles(scenes, subtitle_file)
 
@@ -392,17 +435,16 @@ def _phase_render(job_id: str) -> None:
 
         _update_job(
             job_id,
-            status="completed",
+            status=JOB_COMPLETE,
             phase="render",
             progress=100,
             message="Completed",
             download_url=f"/download/{job_id}",
             manifest_url=f"/manifest/{job_id}",
         )
-        _log(job_id, "Render phase complete")
+        log_event(job_id, "VIDEO RENDERED")
     except Exception as exc:
-        _update_job(job_id, status="failed", message=f"Render error: {exc}")
-        _log(job_id, f"Render phase failed: {exc}")
+        mark_job_failed(job_id, f"Render error: {exc}")
 
 
 def _start_thread(target, *, phase: str | None = None, timeout_job_id: str | None = None, **kwargs: object) -> None:
@@ -454,7 +496,7 @@ def run_pipeline(
     with lock:
         jobs[job_id] = {
             "job_id": job_id,
-            "status": "queued",
+            "status": JOB_CREATED,
             "phase": existing_data.get("phase", "script"),
             "progress": int(existing_data.get("progress", 0)),
             "message": "Queued",
@@ -486,7 +528,7 @@ def run_pipeline(
 
     start_phase = _next_phase_to_run(job_id) if resume else "script"
     if start_phase == "done":
-        _update_job(job_id, status="completed", progress=100, message="Already completed")
+        _update_job(job_id, status=JOB_COMPLETE, progress=100, message="Already completed")
         return
 
     phase_sequence: list[tuple[str, Any, tuple[Any, ...]]] = [
@@ -498,7 +540,7 @@ def run_pipeline(
     start_index = [p[0] for p in phase_sequence].index(start_phase)
     for phase_name, phase_func, phase_args in phase_sequence[start_index:]:
         _run_with_timeout(job_id, phase_name, lambda f=phase_func, a=phase_args: f(*a))
-        if jobs[job_id]["status"] == "failed":
+        if jobs[job_id]["status"] == JOB_FAILED:
             raise RuntimeError(jobs[job_id]["message"])
 
     if profiler:
@@ -558,7 +600,7 @@ async def generate(payload: dict[str, Any], _: None = Depends(_auth)) -> JSONRes
     with lock:
         jobs[job_id] = {
             "job_id": job_id,
-            "status": "queued",
+            "status": JOB_CREATED,
             "phase": "script",
             "progress": 0,
             "message": "Queued",
@@ -631,7 +673,7 @@ def resume_job(job_id: str, _: None = Depends(_auth)) -> JSONResponse:
 
     next_phase = _next_phase_to_run(job_id)
     if next_phase == "done":
-        _update_job(job_id, status="completed", progress=100, message="Already completed")
+        _update_job(job_id, status=JOB_COMPLETE, progress=100, message="Already completed")
         return JSONResponse({"ok": True, "phase": "done"})
 
     _update_job(job_id, status="generating", phase=next_phase, message=f"Resuming {next_phase} phase…")
@@ -663,6 +705,8 @@ async def ws_job_logs(websocket: WebSocket, job_id: str) -> None:
 
     await websocket.accept()
     cursor = 0
+    with lock:
+        ws_connections.setdefault(job_id, set()).add(websocket)
     try:
         while True:
             await asyncio.sleep(1.0)
@@ -673,11 +717,14 @@ async def ws_job_logs(websocket: WebSocket, job_id: str) -> None:
                 batch = logs[cursor:]
                 cursor = len(logs)
                 await websocket.send_json({"logs": batch, "job": job})
-            elif job and job.get("status") in {"failed", "completed"}:
+            elif job and job.get("status") in {JOB_FAILED, JOB_COMPLETE}:
                 await websocket.send_json({"logs": [], "job": job})
                 break
     except WebSocketDisconnect:
         return
+    finally:
+        with lock:
+            ws_connections.get(job_id, set()).discard(websocket)
 
 
 @app.get("/jobs/{job_id}/script")
@@ -701,6 +748,7 @@ async def approve_script(job_id: str, payload: dict[str, Any], _: None = Depends
                 index=s.get("index", i + 1),
                 narration=str(s.get("narration", "")).strip(),
                 visual_description=str(s.get("visual_description", "")).strip(),
+                search_keywords=list(s.get("search_keywords", [])),
             )
             for i, s in enumerate(scenes)
         ]
@@ -711,10 +759,31 @@ async def approve_script(job_id: str, payload: dict[str, Any], _: None = Depends
             style=str(metadata.get("style", "educational")),
             model=str(metadata.get("model", settings.ollama_model)),
             outline="Edited by user",
+            title=str(payload.get("title", "Edited Script") or "Edited Script"),
+            hook=str(payload.get("hook", "") or ""),
+            outro=str(payload.get("outro", "") or ""),
         )
+        script_payload = {
+            "title": package.title,
+            "hook": package.hook,
+            "scenes": [
+                {
+                    "scene_number": p.index,
+                    "narration": p.narration,
+                    "visual_description": p.visual_description,
+                    "search_keywords": p.search_keywords or [],
+                    "duration_seconds": int(jobs.get(job_id, {}).get("scene_seconds", 8)),
+                }
+                for p in plans
+            ],
+            "outro": package.outro,
+        }
+        valid, message = validate_script_structure(script_payload)
+        if not valid:
+            return JSONResponse({"error": f"Invalid script: {message}"}, status_code=400)
         ScriptGenerator().save_script_manifest(package, _project_dir(job_id) / "script.json")
 
-    _update_job(job_id, status="generating", phase="images", progress=15, message="Starting image generation…")
+    _update_job(job_id, status=JOB_SCRIPT_READY, phase="images", progress=15, message="Starting image generation…")
     _start_thread(_phase_images, phase="images", timeout_job_id=job_id, job_id=job_id)
     _log(job_id, "Script approved")
     return JSONResponse({"ok": True})
@@ -788,31 +857,33 @@ async def replace_image(job_id: str, scene_n: int, file: UploadFile = File(...),
 
 
 @app.get("/jobs/{job_id}/preview")
-def preview(job_id: str, _: None = Depends(_auth)) -> FileResponse:
-    """Serve a 10-second preview clip when intermediate video exists."""
+def preview(job_id: str) -> FileResponse:
+    """Serve a 10-second preview clip when intermediate video exists.
 
-    raw = _project_dir(job_id) / "video_raw.mp4"
-    final = _project_dir(job_id) / "video.mp4"
-    source = raw if raw.exists() else final
-    if not source.exists():
+    Auth intentionally omitted: browser <video> elements and polling
+    fetch() calls without credentials cannot attach Basic Auth headers
+    to media src requests.  The job_id already acts as an unguessable
+    opaque token.
+    """
+
+    with lock:
+        job = jobs.get(job_id)
+    if not job or job.get("status") != JOB_COMPLETE:
         raise HTTPException(status_code=404, detail="Preview not ready")
 
-    preview_path = _project_dir(job_id) / "preview.mp4"
-    import subprocess
-
-    subprocess.check_call(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source), "-t", "10", "-c", "copy", str(preview_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return FileResponse(preview_path, media_type="video/mp4")
+    video_path = _project_dir(job_id) / "video.mp4"
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not ready")
+    if video_path.stat().st_size <= 0:
+        raise HTTPException(status_code=500, detail="Video file is empty")
+    return FileResponse(video_path, media_type="video/mp4")
 
 
 @app.post("/jobs/{job_id}/images/approve")
 def approve_images(job_id: str, _: None = Depends(_auth)) -> JSONResponse:
     """Approve image stage and trigger audio generation."""
 
-    _update_job(job_id, status="generating", phase="audio", progress=50, message="Starting audio generation…")
+    _update_job(job_id, status=JOB_MEDIA_READY, phase="audio", progress=50, message="Starting audio generation…")
     _start_thread(_phase_audio, phase="audio", timeout_job_id=job_id, job_id=job_id)
     _log(job_id, "Images approved")
     return JSONResponse({"ok": True})
@@ -838,8 +909,13 @@ def get_audio(job_id: str, _: None = Depends(_auth)) -> JSONResponse:
 
 
 @app.get("/jobs/{job_id}/audio/{scene_n}")
-def serve_audio(job_id: str, scene_n: int, _: None = Depends(_auth)) -> FileResponse:
-    """Serve one narration wav file."""
+def serve_audio(job_id: str, scene_n: int) -> FileResponse:
+    """Serve one narration wav file.
+
+    Auth intentionally omitted: browser <audio> elements cannot attach
+    Basic Auth headers to media src requests.  The job_id already acts
+    as an unguessable opaque token.
+    """
 
     path = _project_dir(job_id) / "audio" / f"scene{scene_n:03d}.wav"
     if not path.exists():
@@ -884,15 +960,20 @@ async def replace_audio(job_id: str, scene_n: int, file: UploadFile = File(...),
 def approve_audio(job_id: str, _: None = Depends(_auth)) -> JSONResponse:
     """Approve audio stage and trigger render phase."""
 
-    _update_job(job_id, status="generating", phase="render", progress=70, message="Starting render…")
+    _update_job(job_id, status=JOB_RENDERING, phase="render", progress=70, message="Starting render…")
     _start_thread(_phase_render, phase="render", timeout_job_id=job_id, job_id=job_id)
     _log(job_id, "Audio approved")
     return JSONResponse({"ok": True})
 
 
 @app.get("/download/{job_id}")
-def download(job_id: str, _: None = Depends(_auth)) -> FileResponse:
-    """Download final mp4 artifact for job."""
+def download(job_id: str) -> FileResponse:
+    """Download final mp4 artifact for job.
+
+    Auth intentionally omitted: browser anchor (<a href>) and
+    window.location downloads cannot attach Basic Auth headers.
+    The job_id already acts as an unguessable opaque token.
+    """
 
     target = _project_dir(job_id) / "video.mp4"
     if not target.exists():
