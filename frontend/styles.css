@@ -227,3 +227,38 @@ progress {
 }
 
 .hidden { display: none !important; }
+
+.upload-panel {
+  background: rgba(16, 30, 48, 0.85);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem;
+  margin-bottom: 1rem;
+}
+.upload-header-row { display: flex; justify-content: space-between; align-items: center; gap: 0.8rem; }
+.upload-help { color: var(--muted); font-size: 0.82rem; margin: 0.4rem 0 0.6rem; }
+.upload-toggle { margin: 0.3rem 0 0.7rem; color: var(--text); }
+.upload-toggle input { width: auto; margin-right: 0.4rem; }
+.upload-dropzone { border: 1px dashed var(--border); border-radius: 8px; padding: 0.9rem; text-align: center; color: var(--muted); }
+.upload-dropzone.dragover { border-color: var(--accent); background: rgba(70, 211, 166, 0.08); }
+.inline-link { background: transparent; border: none; color: var(--accent); cursor: pointer; }
+.upload-message { margin-top: 0.5rem; font-size: 0.82rem; }
+.upload-message.error { color: #ff8080; }
+.upload-message.ok { color: var(--accent); }
+.upload-gallery { margin-top: 0.7rem; display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.7rem; }
+.upload-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem; background: #0f1a2b; }
+.upload-thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 6px; }
+.upload-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 0.35rem; gap: 0.4rem; font-size: 0.75rem; }
+.delete-upload { margin-top: 0; padding: 0.3rem 0.45rem; font-size: 0.74rem; }
+
+.video-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  background: rgba(70, 211, 166, 0.2);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}

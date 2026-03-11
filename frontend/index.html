@@ -39,6 +39,23 @@
       </section>
 
       <section id="step-setup" class="phase active">
+
+        <section class="upload-panel">
+          <div class="upload-header-row">
+            <h2>Upload Photos</h2>
+            <button id="clearUploadsBtn" type="button" class="btn-secondary">Clear all uploads</button>
+          </div>
+          <p class="upload-help">Upload your own photos and optionally use them as scene images.</p>
+          <label class="upload-toggle"><input id="useUploadedImages" type="checkbox" /> Use my photos as scene images</label>
+          <div id="uploadDropzone" class="upload-dropzone" tabindex="0">
+            <input id="uploadInput" type="file" accept="image/*" multiple class="hidden" />
+            <p>Drag & drop photos here, or <button id="pickFilesBtn" type="button" class="inline-link">choose files</button>.</p>
+          </div>
+          <progress id="uploadProgress" max="100" value="0" class="hidden"></progress>
+          <div id="uploadMessage" class="upload-message hidden"></div>
+          <div id="uploadGallery" class="upload-gallery"></div>
+        </section>
+
         <label for="prompt">What is your video about?</label>
         <textarea id="prompt" rows="4" placeholder="e.g. Create a 5-minute educational video about black holes"></textarea>
 
@@ -101,6 +118,14 @@
               <option value="kenburns" selected>kenburns</option>
               <option value="fade">fade</option>
               <option value="none">none</option>
+            </select>
+          </div>
+          <div>
+            <label for="sceneMediaMode">Scene Media Source</label>
+            <select id="sceneMediaMode">
+              <option value="auto" selected>Auto (video when available, photo fallback)</option>
+              <option value="photo">Photos only</option>
+              <option value="video">Video clips only</option>
             </select>
           </div>
           <div>

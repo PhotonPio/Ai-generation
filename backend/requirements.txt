@@ -1,1 +1,2 @@
 -r ../requirements.txt
+tqdm>=4.66.0

@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import random
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
 from PIL import Image, ImageDraw
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - fallback when tqdm is unavailable
+    def tqdm(it, **_):
+        return it
 
 try:
     from .config import get_settings
@@ -28,10 +34,12 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 class ImageGenerator:
     """Generate scene images via uploads, stock APIs, A1111, or fallback placeholder."""
 
-    def __init__(self, job_id: str = "local", *, clear_cache: bool = False) -> None:
+    def __init__(self, job_id: str = "local", *, clear_cache: bool = False, prefer_uploaded_images: bool = False, scene_media_mode: str | None = None) -> None:
         settings = get_settings()
         self.job_id = job_id
         self.settings = settings
+        self.prefer_uploaded_images = prefer_uploaded_images
+        self.scene_media_mode = (scene_media_mode or settings.scene_media_mode or "auto").lower()
 
         self.pexels_key = os.getenv("PEXELS_API_KEY", "")
         self.pixabay_key = os.getenv("PIXABAY_API_KEY", "")
@@ -49,6 +57,8 @@ class ImageGenerator:
 
         self._clip_model = None
         self._clip_processor = None
+
+        self.logger = logging.getLogger(__name__)
 
     def _cache_key(self, prompt: str, width: int, height: int, seed: int | None, steps: int) -> str:
         """Build deterministic cache key for generated image parameters."""
@@ -119,17 +129,38 @@ class ImageGenerator:
             return output_path
 
         retries = max(0, self.settings.clip_retries)
+        scene_media_mode = self.scene_media_mode
+        video_candidate_path = output_path.with_suffix(".mp4")
         for attempt in range(retries + 1):
+            used_video = False
             created = (
-                self._use_uploaded_image(scene, output_path, width, height)
+                (self.prefer_uploaded_images and self._use_uploaded_image(scene, output_path, width, height))
+                or (
+                    self.pexels_key
+                    and scene_media_mode in ("auto", "video")
+                    and self._fetch_pexels_video(scene.visual_prompt, video_candidate_path, width, height)
+                    and self._extract_frame_from_video(video_candidate_path, output_path)
+                )
                 or self._fetch_a1111(scene.visual_prompt, output_path, width, height, effective_steps, seed)
-                or (self.pexels_key and self._fetch_pexels(scene.visual_prompt, output_path, width, height))
+                or (
+                    self.pexels_key
+                    and scene_media_mode in ("auto", "photo")
+                    and self._fetch_pexels(scene.visual_prompt, output_path, width, height)
+                )
                 or (self.pixabay_key and self._fetch_pixabay(scene.visual_prompt, output_path, width, height))
                 or (self.unsplash_key and self._fetch_unsplash(scene.visual_prompt, output_path, width, height))
                 or self._fetch_picsum(output_path, width, height)
             )
+            if created and video_candidate_path.exists():
+                scene.video_path = video_candidate_path
+                used_video = True
+            else:
+                scene.video_path = None
             if not created:
                 self._generate_fallback_image(scene, output_path, width, height)
+                scene.video_path = None
+            if not used_video:
+                video_candidate_path.unlink(missing_ok=True)
 
             if self._clip_score(scene.visual_prompt, output_path) >= self.settings.clip_threshold:
                 break
@@ -158,8 +189,11 @@ class ImageGenerator:
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(_task, scene, path) for scene, path in zip(scenes, outputs)]
-            for future in tqdm(futures, desc="Images", disable=True):
-                future.result()
+            for scene, future in tqdm(list(zip(scenes, futures)), desc="Images", disable=False):
+                try:
+                    future.result()
+                except Exception as exc:
+                    self.logger.error("Scene %s image generation failed: %s", scene.index, exc)
 
         return outputs
 
@@ -239,6 +273,76 @@ class ImageGenerator:
             img = Image.open(io.BytesIO(raw)).convert("RGB")
             img.save(output_path)
             return True
+        except Exception:
+            return False
+
+    def _extract_frame_from_video(self, video_path: Path, output_path: Path) -> bool:
+        """Extract a representative still frame from a local video clip."""
+
+        try:
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                "00:00:01",
+                "-i",
+                str(video_path),
+                "-vframes",
+                "1",
+                str(output_path),
+            ]
+            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return output_path.exists()
+        except Exception:
+            return False
+
+    def _fetch_pexels_video(self, prompt: str, output_path: Path, width: int, height: int) -> bool:
+        """Fetch a landscape mp4 video from Pexels and save to output path."""
+
+        query = self._extract_keywords(prompt)
+        try:
+            response = requests.get(
+                "https://api.pexels.com/v1/videos/search",
+                headers={"Authorization": self.pexels_key},
+                params={"query": query, "per_page": 5, "orientation": "landscape", "size": "medium"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            videos = response.json().get("videos", [])
+            if not videos:
+                return False
+
+            preferred_quality = str(getattr(self.settings, "pexels_video_quality", "hd")).lower()
+            preferred_file = None
+            fallback_file = None
+
+            for video in videos:
+                for video_file in video.get("video_files", []):
+                    if video_file.get("file_type") != "video/mp4":
+                        continue
+                    if fallback_file is None:
+                        fallback_file = video_file
+                    if str(video_file.get("quality", "")).lower() == preferred_quality:
+                        preferred_file = video_file
+                        break
+                if preferred_file is not None:
+                    break
+
+            selected = preferred_file or fallback_file
+            if not selected or not selected.get("link"):
+                return False
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with requests.get(selected["link"], stream=True, timeout=60) as stream_response:
+                stream_response.raise_for_status()
+                with output_path.open("wb") as handle:
+                    for chunk in stream_response.iter_content(chunk_size=8192):
+                        if chunk:
+                            handle.write(chunk)
+            return output_path.exists() and output_path.stat().st_size > 0
         except Exception:
             return False
 
