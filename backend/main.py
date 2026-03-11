@@ -9,11 +9,8 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
-from image_generator import ImageGenerator
 from scene_builder import SceneBuilder
-from script_generator import ScriptGenerator
-from video_renderer import VideoRenderer
-from voice_generator import VoiceGenerator
+from script_generator import ScenePlan, ScriptGenerator
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
@@ -36,6 +33,10 @@ def _update_job(job_id: str, **kwargs: object) -> None:
 
 
 def run_pipeline(job_id: str, prompt: str, minutes: int, scene_seconds: int) -> None:
+    from image_generator import ImageGenerator
+    from video_renderer import VideoRenderer
+    from voice_generator import VoiceGenerator
+
     try:
         _update_job(job_id, status="running", progress=5, message="Generating script")
 
@@ -119,6 +120,54 @@ def run_pipeline(job_id: str, prompt: str, minutes: int, scene_seconds: int) -> 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"ok": True})
+
+
+@app.route("/schema-check", methods=["POST"])
+def schema_check():
+    payload = request.get_json(force=True) or {}
+    raw_text = str(payload.get("raw_text", "")).strip()
+    minutes = int(payload.get("minutes", 1))
+    scene_seconds = int(payload.get("scene_seconds", 8))
+
+    if not raw_text:
+        return jsonify({"ok": False, "error": "raw_text is required", "scenes": []}), 400
+
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        return jsonify({"ok": False, "error": f"Invalid raw_text JSON: {exc}", "scenes": []}), 400
+
+    scenes_raw = data.get("scenes", []) if isinstance(data, dict) else []
+    if not isinstance(scenes_raw, list):
+        return jsonify({"ok": False, "error": "scenes must be a list", "scenes": []}), 400
+
+    scene_plans = []
+    for idx, item in enumerate(scenes_raw, start=1):
+        if not isinstance(item, dict):
+            continue
+        narration = str(item.get("narration", "")).strip()
+        visual = str(item.get("visual_description", "")).strip()
+        if narration and visual:
+            scene_plans.append(ScenePlan(index=idx, narration=narration, visual_description=visual))
+
+    if not scene_plans:
+        script_gen = ScriptGenerator(model="llama3")
+        target_count = script_gen._target_scene_count(minutes, scene_seconds)
+        scene_plans = script_gen._fallback_scene_script(prompt="schema check fallback", scene_count=target_count)
+
+    builder = SceneBuilder()
+    scenes = builder.build(scene_plans, scene_seconds)
+
+    serialized = [
+        {
+            "index": s.index,
+            "narration": s.narration,
+            "visual_description": s.visual_prompt,
+            "estimated_duration": s.estimated_duration,
+        }
+        for s in scenes
+    ]
+    return jsonify({"ok": True, "scene_count": len(serialized), "scenes": serialized})
 
 
 @app.route("/generate", methods=["POST"])
