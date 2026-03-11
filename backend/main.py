@@ -744,7 +744,7 @@ def get_images(job_id: str, _: None = Depends(_auth)) -> JSONResponse:
 
 
 @app.get("/jobs/{job_id}/images/{scene_n}")
-def serve_image(job_id: str, scene_n: int, _: None = Depends(_auth)) -> FileResponse:
+def serve_image(job_id: str, scene_n: int) -> FileResponse:
     """Serve one scene image."""
 
     path = _project_dir(job_id) / "images" / f"scene{scene_n:03d}.png"
@@ -754,7 +754,7 @@ def serve_image(job_id: str, scene_n: int, _: None = Depends(_auth)) -> FileResp
 
 
 @app.get("/jobs/{job_id}/thumbnails/{filename}")
-def serve_thumbnail(job_id: str, filename: str, _: None = Depends(_auth)) -> FileResponse:
+def serve_thumbnail(job_id: str, filename: str) -> FileResponse:
     """Serve generated thumbnail variant."""
 
     path = _project_dir(job_id) / "thumbnails" / secure_filename(filename)
@@ -941,7 +941,7 @@ def list_uploads(_: None = Depends(_auth)) -> JSONResponse:
 
 
 @app.get("/uploads/{filename}")
-def serve_upload(filename: str, _: None = Depends(_auth)) -> FileResponse:
+def serve_upload(filename: str) -> FileResponse:
     """Serve previously uploaded source photo."""
 
     target = UPLOADS_DIR / secure_filename(filename)
