@@ -8,7 +8,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from moviepy import AudioFileClip, ImageClip, vfx
+try:
+    from moviepy import AudioFileClip, ImageClip, VideoFileClip, vfx
+except ImportError:  # pragma: no cover
+    from moviepy.editor import AudioFileClip, ImageClip, VideoFileClip
+    from moviepy import vfx
 
 try:
     from .config import get_settings
@@ -55,6 +59,23 @@ class VideoRenderer:
 
         return clip
 
+    def _fit_video_duration(self, clip: VideoFileClip, duration: float) -> VideoFileClip:
+        """Trim or loop video clips to match scene duration across moviepy versions."""
+
+        try:
+            current_duration = float(getattr(clip, "duration", 0.0) or 0.0)
+            if current_duration >= duration:
+                try:
+                    return clip.subclipped(0, duration)
+                except Exception:
+                    return clip.subclip(0, duration)
+            try:
+                return clip.loop(duration=duration)
+            except Exception:
+                return clip.fx(vfx.loop, duration=duration)
+        except Exception:
+            return clip
+
     def render_segments(
         self,
         scenes: list[Scene],
@@ -71,9 +92,15 @@ class VideoRenderer:
 
         for scene, image_path, audio_path in zip(scenes, images, audios):
             seg_path = self.segment_dir / f"scene{scene.index:03d}.mp4"
+            scene_video_path = scene.video_path or image_path.with_suffix(".mp4")
+            use_video_bg = scene_video_path.exists()
             try:
-                base = ImageClip(str(image_path)).with_duration(scene.estimated_duration)
-                effected = self._apply_zoom_effect(base, scene, transition_style)
+                if use_video_bg:
+                    base = VideoFileClip(str(scene_video_path))
+                    effected = self._fit_video_duration(base, scene.estimated_duration)
+                else:
+                    base = ImageClip(str(image_path)).with_duration(scene.estimated_duration)
+                    effected = self._apply_zoom_effect(base, scene, transition_style)
                 with AudioFileClip(str(audio_path)) as audio_clip:
                     video = effected.with_audio(audio_clip).with_fps(24)
                     video.write_videofile(
@@ -81,23 +108,22 @@ class VideoRenderer:
                         codec="libx264",
                         audio_codec="aac",
                         fps=24,
-                        preset="veryfast",
+                        preset=self.settings.video_preset,
+                        ffmpeg_params=["-crf", str(self.settings.video_crf)],
+                        audio_bitrate="192k",
                         logger=None,
                     )
             except Exception:
                 # FFmpeg fallback keeps backward compatibility on constrained systems.
                 cmd = [
                     *self._ffmpeg_base_cmd(),
-                    "-loop",
-                    "1",
-                    "-i",
-                    str(image_path),
+                    *( ["-i", str(scene_video_path)] if use_video_bg else ["-loop", "1", "-i", str(image_path)] ),
                     "-i",
                     str(audio_path),
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "veryfast",
+                    self.settings.video_preset,
                     "-tune",
                     "stillimage",
                     "-c:a",
@@ -108,7 +134,9 @@ class VideoRenderer:
                     "yuv420p",
                     "-shortest",
                     "-vf",
-                    "scale=1280:720,format=yuv420p",
+                    f"scale={self.settings.video_width}:{self.settings.video_height},format=yuv420p",
+                    "-crf",
+                    str(self.settings.video_crf),
                     str(seg_path),
                 ]
                 subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -227,7 +255,7 @@ class VideoRenderer:
             "-i",
             str(video_path),
             "-vf",
-            f"subtitles={subtitle_path}",
+            f"subtitles={subtitle_path}:force_style='FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1'",
             "-c:a",
             "copy",
             str(output_path),

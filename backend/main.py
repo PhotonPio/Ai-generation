@@ -16,8 +16,9 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from starlette import status
 from werkzeug.utils import secure_filename
 
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover
 
 settings = get_settings()
 BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR.parent / "frontend"
 OUTPUT_DIR = BASE_DIR / "output"
 PROJECTS_DIR = OUTPUT_DIR / "projects"
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg"}
@@ -50,6 +52,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve frontend static assets
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_frontend() -> HTMLResponse:
+    """Serve the main frontend application."""
+
+    index = FRONTEND_DIR / "index.html"
+    if index.exists():
+        return HTMLResponse(content=index.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>Frontend not found</h1>", status_code=404)
+
 
 security = HTTPBasic(auto_error=False)
 
@@ -233,7 +250,12 @@ def _phase_images(job_id: str) -> None:
         if not scenes:
             raise RuntimeError("No scenes to render images")
 
-        image_gen = ImageGenerator(job_id=job_id, clear_cache=bool(job.get("clear_cache", False)))
+        image_gen = ImageGenerator(
+            job_id=job_id,
+            clear_cache=bool(job.get("clear_cache", False)),
+            prefer_uploaded_images=bool(job.get("use_uploaded_images", False)),
+            scene_media_mode=str(job.get("scene_media_mode", settings.scene_media_mode)),
+        )
         _update_job(job_id, status="generating", phase="images", progress=18, message="Generating images…")
         _log(job_id, "Image generation started")
 
@@ -416,6 +438,7 @@ def run_pipeline(
     max_scenes: int = 300,
     profile: bool = False,
     timeout_seconds: int | None = None,
+    scene_media_mode: str = "auto",
     resume: bool = False,
 ) -> None:
     """Run the complete pipeline synchronously for CLI/workflows."""
@@ -449,6 +472,8 @@ def run_pipeline(
             "auto_scene_duration": bool(existing_data.get("auto_scene_duration", auto_scene_duration)),
             "max_scenes": int(existing_data.get("max_scenes", max_scenes)),
             "timeout_seconds": int(existing_data.get("timeout_seconds", timeout_seconds or settings.job_timeout_seconds)),
+            "use_uploaded_images": bool(existing_data.get("use_uploaded_images", False)),
+            "scene_media_mode": str(existing_data.get("scene_media_mode", scene_media_mode or settings.scene_media_mode)),
             "phase_times": existing_data.get("phase_times", {}),
             "download_url": existing_data.get("download_url"),
             "manifest_url": existing_data.get("manifest_url"),
@@ -523,6 +548,8 @@ async def generate(payload: dict[str, Any], _: None = Depends(_auth)) -> JSONRes
     auto_scene_duration = bool(payload.get("auto_scene_duration", False))
     max_scenes = int(payload.get("max_scenes", settings.max_scenes))
     timeout_seconds = int(payload.get("timeout_seconds", settings.job_timeout_seconds))
+    use_uploaded_images = bool(payload.get("use_uploaded_images", False))
+    scene_media_mode = str(payload.get("scene_media_mode", settings.scene_media_mode)).lower()
 
     job_id = uuid.uuid4().hex[:12]
     project_dir = _project_dir(job_id)
@@ -549,6 +576,8 @@ async def generate(payload: dict[str, Any], _: None = Depends(_auth)) -> JSONRes
             "auto_scene_duration": auto_scene_duration,
             "max_scenes": max_scenes,
             "timeout_seconds": timeout_seconds,
+            "use_uploaded_images": use_uploaded_images,
+            "scene_media_mode": scene_media_mode,
             "phase_times": {},
             "download_url": None,
             "manifest_url": None,
@@ -701,11 +730,13 @@ def get_images(job_id: str, _: None = Depends(_auth)) -> JSONResponse:
         n = scene["index"]
         fname = f"scene{n:03d}.png"
         path = _project_dir(job_id) / "images" / fname
+        video_path = _project_dir(job_id) / "images" / f"scene{n:03d}.mp4"
         images.append(
             {
                 "scene": n,
                 "narration": scene["narration"],
                 "url": f"/jobs/{job_id}/images/{n}" if path.exists() else None,
+                "is_video": video_path.exists(),
             }
         )
     thumbs = sorted((_project_dir(job_id) / "thumbnails").glob("*.png"))

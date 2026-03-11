@@ -6,6 +6,7 @@ import math
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 
 _HAS_NLTK = importlib.util.find_spec("nltk") is not None
 if _HAS_NLTK:
@@ -40,6 +41,7 @@ class Scene:
     narration: str
     visual_prompt: str
     estimated_duration: float
+    video_path: Path | None = None
 
 
 class SceneBuilder:
