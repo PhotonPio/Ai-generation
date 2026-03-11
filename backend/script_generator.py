@@ -11,6 +11,7 @@ class ScenePlan:
     index: int
     narration: str
     visual_description: str
+    estimated_duration: float
 
 
 class ScriptGenerator:
@@ -27,7 +28,7 @@ class ScriptGenerator:
         instruction = (
             "You are a documentary and storytelling script engine. "
             "Return strict JSON with key 'scenes' containing an array of objects with fields: "
-            "narration and visual_description. Ensure narration is concise and timed for one scene. "
+            "narration, image_description, and estimated_duration. Ensure narration is concise and timed for one scene. "
             f"Generate exactly {scene_count} scenes for this request: {prompt}"
         )
 
@@ -38,38 +39,109 @@ class ScriptGenerator:
             instruction,
         ]
 
-        try:
-            output = subprocess.check_output(cmd, text=True)
-            parsed = self._parse_ollama_output(output)
+        for _ in range(2):
+            try:
+                output = subprocess.check_output(cmd, text=True)
+            except subprocess.CalledProcessError:
+                continue
+
+            parsed = self._parse_ollama_output(
+                output,
+                expected_scene_count=scene_count,
+                scene_seconds=scene_seconds,
+            )
             if parsed:
                 return parsed
-        except subprocess.CalledProcessError:
-            pass
 
-        return self._fallback_scene_script(prompt=prompt, scene_count=scene_count)
+        return self._fallback_scene_script(prompt=prompt, scene_count=scene_count, scene_seconds=scene_seconds)
 
-    def _parse_ollama_output(self, output: str) -> list[ScenePlan]:
-        start = output.find("{")
-        end = output.rfind("}")
+    def _strip_code_fences(self, output: str) -> str:
+        cleaned = output.strip()
+        if not cleaned.startswith("```"):
+            return cleaned
+
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    def _parse_ollama_output(self, output: str, expected_scene_count: int, scene_seconds: int) -> list[ScenePlan]:
+        cleaned = self._strip_code_fences(output)
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
         if start == -1 or end == -1 or end <= start:
             return []
 
-        payload = output[start : end + 1]
+        payload = cleaned[start : end + 1]
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
             return []
 
         scenes = data.get("scenes", [])
+        if not isinstance(scenes, list) or not scenes:
+            return []
+
+        normalized = self._normalize_scenes(
+            scenes=scenes,
+            expected_scene_count=expected_scene_count,
+            scene_seconds=scene_seconds,
+        )
+
         parsed: list[ScenePlan] = []
-        for idx, item in enumerate(scenes, start=1):
-            narration = str(item.get("narration", "")).strip()
-            visual = str(item.get("visual_description", "")).strip()
-            if narration and visual:
-                parsed.append(ScenePlan(index=idx, narration=narration, visual_description=visual))
+        for idx, item in enumerate(normalized, start=1):
+            parsed.append(
+                ScenePlan(
+                    index=idx,
+                    narration=item["narration"],
+                    visual_description=item["image_description"],
+                    estimated_duration=item["estimated_duration"],
+                )
+            )
         return parsed
 
-    def _fallback_scene_script(self, prompt: str, scene_count: int) -> list[ScenePlan]:
+    def _normalize_scenes(self, scenes: list[dict], expected_scene_count: int, scene_seconds: int) -> list[dict[str, str | float]]:
+        parsed: list[dict[str, str | float]] = []
+        for item in scenes:
+            if not isinstance(item, dict):
+                continue
+            narration = str(item.get("narration", "")).strip()
+            visual = str(item.get("image_description") or item.get("visual_description") or "").strip()
+            if narration and not visual:
+                visual = f"Cinematic documentary image illustrating: {narration}"
+
+            duration_value = item.get("estimated_duration")
+            try:
+                duration = float(duration_value)
+            except (TypeError, ValueError):
+                duration = float(scene_seconds)
+
+            if narration and visual:
+                parsed.append(
+                    {
+                        "narration": narration,
+                        "image_description": visual,
+                        "estimated_duration": max(duration, 1.0),
+                    }
+                )
+
+        if len(parsed) < expected_scene_count:
+            for i in range(len(parsed) + 1, expected_scene_count + 1):
+                parsed.append(
+                    {
+                        "narration": f"Scene {i}. Continuation of the story.",
+                        "image_description": f"Cinematic documentary illustration for scene {i}.",
+                        "estimated_duration": float(scene_seconds),
+                    }
+                )
+        elif len(parsed) > expected_scene_count:
+            parsed = parsed[:expected_scene_count]
+
+        return parsed
+
+    def _fallback_scene_script(self, prompt: str, scene_count: int, scene_seconds: int) -> list[ScenePlan]:
         base = f"Narrated explainer about: {prompt}."
         scenes: list[ScenePlan] = []
         for i in range(1, scene_count + 1):
@@ -84,6 +156,7 @@ class ScriptGenerator:
                         f"Cinematic documentary illustration for scene {i}: {prompt}, dramatic lighting, "
                         "high detail, 16:9 composition."
                     ),
+                    estimated_duration=float(scene_seconds),
                 )
             )
         return scenes
@@ -97,6 +170,7 @@ class ScriptGenerator:
                     "index": scene.index,
                     "narration": scene.narration,
                     "visual_description": scene.visual_description,
+                    "estimated_duration": scene.estimated_duration,
                 }
                 for scene in scenes
             ],

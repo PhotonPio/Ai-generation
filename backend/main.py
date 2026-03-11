@@ -155,6 +155,38 @@ def generate():
     return jsonify({"job_id": job_id})
 
 
+
+
+@app.route("/schema-check", methods=["POST"])
+def schema_check():
+    payload = request.get_json(force=True)
+    prompt = str(payload.get("prompt", "")).strip()
+    minutes = int(payload.get("minutes", 5))
+    scene_seconds = int(payload.get("scene_seconds", 8))
+
+    if not prompt:
+        return jsonify({"error": "Prompt is required"}), 400
+
+    script_gen = ScriptGenerator(model="llama3")
+    scenes = script_gen.generate_scene_script(prompt, minutes, scene_seconds)
+    return jsonify(
+        {
+            "prompt": prompt,
+            "minutes": minutes,
+            "scene_seconds": scene_seconds,
+            "scene_count": len(scenes),
+            "scenes": [
+                {
+                    "index": scene.index,
+                    "narration": scene.narration,
+                    "image_description": scene.visual_description,
+                    "estimated_duration": scene.estimated_duration,
+                }
+                for scene in scenes
+            ],
+        }
+    )
+
 @app.route("/status/<job_id>", methods=["GET"])
 def status(job_id: str):
     with lock:

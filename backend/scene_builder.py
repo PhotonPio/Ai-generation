@@ -26,7 +26,7 @@ class SceneBuilder:
                     index=plan.index,
                     narration=plan.narration,
                     visual_prompt=plan.visual_description,
-                    estimated_duration=float(duration),
+                    estimated_duration=max(float(plan.estimated_duration), float(duration)),
                 )
             )
         return scenes
