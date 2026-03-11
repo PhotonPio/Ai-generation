@@ -41,6 +41,7 @@ class ScenePlan:
     index: int
     narration: str
     visual_description: str
+    search_keywords: list[str] | None = None
 
 
 @dataclass
@@ -60,6 +61,47 @@ class ScriptPackage:
     style: str
     model: str
     outline: str
+    title: str
+    hook: str
+    outro: str
+
+
+def validate_script_structure(script: dict[str, object]) -> tuple[bool, str]:
+    """Validate generated script payload before pipeline stages continue."""
+
+    scenes = script.get("scenes")
+    if not isinstance(script.get("title"), str) or not str(script.get("title", "")).strip():
+        return False, "Missing title"
+    if not isinstance(script.get("hook"), str) or not str(script.get("hook", "")).strip():
+        return False, "Missing hook"
+    if not isinstance(script.get("outro"), str) or not str(script.get("outro", "")).strip():
+        return False, "Missing outro"
+    if not isinstance(scenes, list):
+        return False, "Scenes must be a list"
+    if len(scenes) < 5 or len(scenes) > 10:
+        return False, "Scenes must contain 5-10 items"
+
+    for index, scene in enumerate(scenes, start=1):
+        if not isinstance(scene, dict):
+            return False, f"Scene {index} is invalid"
+        narration = str(scene.get("narration", "")).strip()
+        word_count = len(narration.split())
+        if word_count < 30 or word_count > 80:
+            return False, f"Scene {index} narration must have 30-80 words"
+        visual_description = str(scene.get("visual_description", "")).strip()
+        if not visual_description:
+            return False, f"Scene {index} missing visual_description"
+        scene_number = int(scene.get("scene_number", 0) or 0)
+        if scene_number != index:
+            return False, f"Scene number mismatch for scene {index}"
+        duration = int(scene.get("duration_seconds", 0) or 0)
+        if duration <= 0:
+            return False, f"Scene {index} missing duration_seconds"
+        keywords = scene.get("search_keywords")
+        if not isinstance(keywords, list) or len([k for k in keywords if str(k).strip()]) == 0:
+            return False, f"Scene {index} missing search keywords"
+
+    return True, "ok"
 
 
 class ScriptGenerator:
@@ -71,12 +113,12 @@ class ScriptGenerator:
         self.ollama_url = (ollama_url or settings.ollama_url).rstrip("/")
         self.style = style or settings.default_style
 
-    def _target_scene_count(self, total_minutes: int, scene_seconds: int, max_scenes: int = 300) -> int:
+    def _target_scene_count(self, total_minutes: int, scene_seconds: int, max_scenes: int = 10) -> int:
         """Calculate bounded scene count for the requested runtime."""
 
         total_seconds = max(total_minutes, 1) * 60
         estimate = max(total_seconds // max(scene_seconds, 1), 1)
-        return min(estimate, max_scenes)
+        return max(5, min(estimate, min(max_scenes, 10)))
 
     def _ask_ollama(self, prompt: str, timeout: int = 180) -> str:
         """Query local Ollama and return the plain response text."""
@@ -154,23 +196,43 @@ class ScriptGenerator:
 
         scene_prompt = (
             "You are a documentary and storytelling script engine. "
-            "Return ONLY strict JSON object with key 'scenes' where each item has: "
-            "'narration' and 'visual_description'. "
+            "Return ONLY strict JSON object in this format: "
+            "{title, hook, scenes:[{scene_number,narration,visual_description,search_keywords,duration_seconds}], outro}. "
             f"Generate exactly {scene_count} scenes in language '{language}'. "
             f"Style must be {style_name} ({style_directive}). "
+            "Every narration MUST be 30-80 words. Every scene MUST have 3-5 search_keywords tuned for stock media search. "
             "Use this outline as structure:\n"
             f"{outline}\n"
             "No markdown, no commentary."
         )
 
-        try:
-            output = self._ask_ollama(scene_prompt, timeout=240)
-            parsed = self._parse_output(output)
-        except Exception:
-            parsed = []
+        parsed_script: dict[str, object] = {}
+        for _ in range(3):
+            try:
+                output = self._ask_ollama(scene_prompt, timeout=240)
+                parsed_script = self._parse_output(output, scene_seconds)
+            except Exception:
+                parsed_script = {}
+            valid, _message = validate_script_structure(parsed_script)
+            if valid:
+                break
 
-        if not parsed:
-            parsed = self._fallback_scene_script(prompt=prompt, scene_count=scene_count, style=style_name)
+        if not parsed_script or not validate_script_structure(parsed_script)[0]:
+            parsed_script = self._fallback_scene_script(prompt=prompt, scene_count=scene_count, style=style_name, scene_seconds=scene_seconds)
+
+        valid, message = validate_script_structure(parsed_script)
+        if not valid:
+            raise RuntimeError(f"Script validation failed: {message}")
+
+        parsed = [
+            ScenePlan(
+                index=int(item["scene_number"]),
+                narration=str(item["narration"]),
+                visual_description=str(item["visual_description"]),
+                search_keywords=[str(k) for k in item.get("search_keywords", [])],
+            )
+            for item in parsed_script["scenes"]
+        ]
 
         return ScriptPackage(
             scenes=parsed,
@@ -178,27 +240,39 @@ class ScriptGenerator:
             style=style_name,
             model=self.model,
             outline=outline,
+            title=str(parsed_script.get("title", "")),
+            hook=str(parsed_script.get("hook", "")),
+            outro=str(parsed_script.get("outro", "")),
         )
 
-    def _parse_output(self, output: str) -> list[ScenePlan]:
+    def _parse_output(self, output: str, scene_seconds: int) -> dict[str, object]:
         """Extract strict JSON payload and parse scene items."""
 
         match = re.search(r"\{.*\}", output, flags=re.DOTALL)
         if not match:
-            return []
+            return {}
         try:
             data = json.loads(match.group(0))
         except json.JSONDecodeError:
-            return []
+            return {}
 
-        scenes_raw = data.get("scenes", [])
-        parsed: list[ScenePlan] = []
-        for idx, item in enumerate(scenes_raw, start=1):
-            narration = str(item.get("narration", "")).strip()
-            visual = str(item.get("visual_description", "")).strip()
-            if narration and visual:
-                parsed.append(ScenePlan(index=idx, narration=narration, visual_description=visual))
-        return parsed
+        payload = {
+            "title": str(data.get("title", "")).strip(),
+            "hook": str(data.get("hook", "")).strip(),
+            "outro": str(data.get("outro", "")).strip(),
+            "scenes": [],
+        }
+        for idx, item in enumerate(data.get("scenes", []), start=1):
+            payload["scenes"].append(
+                {
+                    "scene_number": int(item.get("scene_number", idx) or idx),
+                    "narration": str(item.get("narration", "")).strip(),
+                    "visual_description": str(item.get("visual_description", "")).strip(),
+                    "search_keywords": item.get("search_keywords", []),
+                    "duration_seconds": int(item.get("duration_seconds", scene_seconds) or scene_seconds),
+                }
+            )
+        return payload
 
     def _fallback_outline(self, prompt: str, scene_count: int) -> str:
         """Return deterministic outline when Ollama is unavailable."""
@@ -207,25 +281,33 @@ class ScriptGenerator:
             [f"{i}. {prompt} - key concept {i}" for i in range(1, scene_count + 1)]
         )
 
-    def _fallback_scene_script(self, prompt: str, scene_count: int, style: str) -> list[ScenePlan]:
+    def _fallback_scene_script(self, prompt: str, scene_count: int, style: str, scene_seconds: int) -> dict[str, object]:
         """Return deterministic scene script fallback for offline mode."""
 
         style_hint = STYLE_PROMPTS.get(style, STYLE_PROMPTS["educational"])
         base = f"Narrated {style} video about: {prompt}."
-        scenes: list[ScenePlan] = []
+        scenes: list[dict[str, object]] = []
         for i in range(1, scene_count + 1):
-            scenes.append(
-                ScenePlan(
-                    index=i,
-                    narration=(
-                        f"Scene {i}. {base} This segment follows a {style_hint} approach and moves the story forward."
-                    ),
-                    visual_description=(
-                        f"Cinematic 16:9 frame for scene {i}: {prompt}, {style} tone, highly detailed composition."
-                    ),
-                )
+            narration = (
+                f"Scene {i} introduces a core angle of {prompt} using a {style} tone with clear context and examples. "
+                "It explains why this moment matters, connects with the previous idea, and sets up the next visual beat "
+                "to keep pacing coherent and engaging for viewers."
             )
-        return scenes
+            scenes.append(
+                {
+                    "scene_number": i,
+                    "narration": narration,
+                    "visual_description": f"Cinematic 16:9 frame for scene {i}: {prompt}, {style_hint}, realistic detail.",
+                    "search_keywords": [f"{prompt} scene {i}", f"{prompt} cinematic", "technology background"],
+                    "duration_seconds": scene_seconds,
+                }
+            )
+        return {
+            "title": f"{prompt.title()} Explained",
+            "hook": f"Let us break down {prompt} in a fast, visual journey.",
+            "scenes": scenes,
+            "outro": f"That concludes this guide to {prompt} with practical takeaways.",
+        }
 
     def save_script_manifest(self, package: ScriptPackage, destination: Path) -> None:
         """Persist generated script package to disk."""
@@ -237,13 +319,18 @@ class ScriptGenerator:
             "style": package.style,
             "model": package.model,
             "outline": package.outline,
+            "title": package.title,
+            "hook": package.hook,
+            "outro": package.outro,
             "scenes": [
                 {
                     "index": s.index,
+                    "scene_number": s.index,
                     "narration": s.narration,
                     "visual_description": s.visual_description,
+                    "search_keywords": s.search_keywords or [],
                 }
                 for s in package.scenes
             ],
         }
-        destination.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        destination.write_text(json.dumps(payload, indent=2), encoding="utf-8")tf-8")
