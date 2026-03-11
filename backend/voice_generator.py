@@ -13,6 +13,12 @@ from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 try:
+    from tqdm import tqdm
+except Exception:
+    def tqdm(it, **_):
+        return it
+
+try:
     from .config import get_settings
     from .scene_builder import Scene
 except ImportError:  # pragma: no cover
