@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Image generation module with provider fallbacks, caching, and CLIP scoring."""
 
+import asyncio
+import functools
 import hashlib
 import io
 import logging
@@ -59,6 +61,7 @@ class ImageGenerator:
         self._clip_processor = None
 
         self.logger = logging.getLogger(__name__)
+        self._used_media_ids: set[str] = set()
 
     def _cache_key(self, prompt: str, width: int, height: int, seed: int | None, steps: int) -> str:
         """Build deterministic cache key for generated image parameters."""
@@ -145,7 +148,7 @@ class ImageGenerator:
                 or (
                     self.pexels_key
                     and scene_media_mode in ("auto", "photo")
-                    and self._fetch_pexels(scene.visual_prompt, output_path, width, height)
+                    and self._fetch_pexels(scene, scene.visual_prompt, output_path, width, height)
                 )
                 or (self.pixabay_key and self._fetch_pixabay(scene.visual_prompt, output_path, width, height))
                 or (self.unsplash_key and self._fetch_unsplash(scene.visual_prompt, output_path, width, height))
@@ -196,6 +199,29 @@ class ImageGenerator:
                     self.logger.error("Scene %s image generation failed: %s", scene.index, exc)
 
         return outputs
+
+    async def generate_images_async(
+        self,
+        scenes: list[Scene],
+        output_dir: Path,
+        *,
+        max_workers: int = 5,
+        steps: int | None = None,
+        seed: int | None = None,
+    ) -> list[Path]:
+        """Async wrapper to generate scene media concurrently."""
+
+        limiter = asyncio.Semaphore(max_workers)
+        loop = asyncio.get_running_loop()
+        outputs: list[Path] = [output_dir / f"scene{s.index:03d}.png" for s in scenes]
+
+        async def _run(scene: Scene, path: Path) -> Path:
+            async with limiter:
+                func = functools.partial(self.generate_scene_image, scene, path, 1280, 720, steps=steps, seed=seed)
+                return await loop.run_in_executor(None, func)
+
+        tasks = [_run(scene, path) for scene, path in zip(scenes, outputs)]
+        return list(await asyncio.gather(*tasks))
 
     def generate_thumbnail_variants(
         self,
@@ -346,26 +372,88 @@ class ImageGenerator:
         except Exception:
             return False
 
-    def _fetch_pexels(self, prompt: str, output_path: Path, width: int, height: int) -> bool:
-        """Fetch image from Pexels."""
+    def _generate_scene_queries(self, scene: Scene, prompt: str) -> list[str]:
+        """Build multiple candidate stock-media queries per scene."""
 
-        query = self._extract_keywords(prompt)
-        try:
-            response = requests.get(
-                "https://api.pexels.com/v1/search",
-                headers={"Authorization": self.pexels_key},
-                params={"query": query, "per_page": 5, "orientation": "landscape"},
-                timeout=15,
-            )
-            response.raise_for_status()
-            photos = response.json().get("photos", [])
-            if not photos:
-                return False
-            photo = random.choice(photos)
-            url = photo["src"].get("large2x") or photo["src"]["original"]
-            return self._download_and_resize(url, output_path, width, height)
-        except Exception:
-            return False
+        keywords = [k.strip() for k in (scene.search_keywords or []) if str(k).strip()]
+        if not keywords:
+            keywords = [w for w in prompt.split()[:8] if w]
+        base = " ".join(keywords[:4]).strip() or self._extract_keywords(prompt)
+        alt = " ".join(keywords[1:5]).strip() if len(keywords) > 2 else base
+        adjective_stripped = " ".join([w for w in base.split() if w.lower() not in {"beautiful", "amazing", "dramatic", "cinematic", "stunning"}]).strip()
+        queries = [q for q in [base, alt, adjective_stripped, "technology background"] if q]
+        deduped: list[str] = []
+        for q in queries:
+            if q not in deduped:
+                deduped.append(q)
+        return deduped
+
+    def _search_pexels(self, query: str) -> list[dict[str, object]]:
+        """Search pexels photos with broader result set for ranking."""
+
+        response = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers={"Authorization": self.pexels_key},
+            params={"query": query, "per_page": 15, "orientation": "landscape"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        return list(response.json().get("photos", []))
+
+    def _rank_media(self, items: list[dict[str, object]], query: str) -> dict[str, object] | None:
+        """Score media by keyword overlap, orientation and resolution."""
+
+        query_tokens = {t.lower() for t in query.split() if t}
+        best: dict[str, object] | None = None
+        best_score = -1
+        for item in items:
+            media_id = str(item.get("id", ""))
+            if media_id and media_id in self._used_media_ids:
+                continue
+            width = int(item.get("width", 0) or 0)
+            height = int(item.get("height", 0) or 0)
+            if width < 1920:
+                continue
+            desc = str(item.get("alt", "")).lower()
+            token_hits = len([t for t in query_tokens if t in desc])
+            landscape_bonus = 4 if width >= height else 0
+            score = token_hits * 3 + landscape_bonus + min(width // 640, 4)
+            if score > best_score:
+                best = item
+                best_score = score
+        return best
+
+    def _fetch_pexels(self, scene: Scene, prompt: str, output_path: Path, width: int, height: int) -> bool:
+        """Fetch best matching image from Pexels with query generation + ranking."""
+
+        queries = self._generate_scene_queries(scene, prompt)
+        all_results: list[dict[str, object]] = []
+        for query in queries:
+            try:
+                results = self._search_pexels(query)
+                self.logger.info("[JOB %s] PEXELS query='%s' results=%s", self.job_id, query, len(results))
+                all_results.extend(results)
+                ranked = self._rank_media(results, query)
+                if ranked:
+                    media_id = str(ranked.get("id", ""))
+                    url = ((ranked.get("src") or {}).get("large2x") or (ranked.get("src") or {}).get("original"))
+                    if isinstance(url, str) and self._download_and_resize(url, output_path, width, height):
+                        if media_id:
+                            self._used_media_ids.add(media_id)
+                        self.logger.info("[JOB %s] selected PEXELS media id=%s query='%s'", self.job_id, media_id or "na", query)
+                        return True
+            except Exception:
+                continue
+
+        generic = self._rank_media(all_results, "technology background")
+        if generic:
+            url = ((generic.get("src") or {}).get("large2x") or (generic.get("src") or {}).get("original"))
+            media_id = str(generic.get("id", ""))
+            if isinstance(url, str) and self._download_and_resize(url, output_path, width, height):
+                if media_id:
+                    self._used_media_ids.add(media_id)
+                return True
+        return False
 
     def _fetch_pixabay(self, prompt: str, output_path: Path, width: int, height: int) -> bool:
         """Fetch image from Pixabay."""
